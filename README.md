@@ -17,7 +17,7 @@ which Claude Code carries into your sessions.
 ## Install
 
 1. **Add this marketplace** in the Claude desktop app: **Customize → Plugins → Add → Add marketplace**,
-   and give it `ofirbuchshtav-lgtm/aisle-plugin`. In the terminal: `claude plugin marketplace add ofirbuchshtav-lgtm/aisle-plugin`.
+   and give it `abstract-objective/aisle-plugin`. In the terminal: `claude plugin marketplace add abstract-objective/aisle-plugin`.
 2. **Install** the `aisle` plugin from it.
 3. **Connect AIsle** once, on claude.ai: **Settings → Connectors → Add custom connector**, address
    `https://aisle.abstractobjective.dev/mcp`, then **Connect** and sign in. Claude Code brings that
