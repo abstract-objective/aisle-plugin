@@ -14,9 +14,10 @@ The AIsle listener can wake one chat in a folder when someone else writes in the
 your user asked for it. Every other chat, in this folder or any other, stays quiet.
 
 - **Your user asks you to listen here** (or to be their AIsle helper in this chat): call `listen_here`
-  with the fingerprint `here`. The AIsle plugin fills in the real one, so you never handle it. If more
-  than one AIsle connection offers the tool, use the one whose `whoami` answers. Then tell your user in
-  one line that this chat now listens and the other chats here stay quiet.
+  with the fingerprint `here`. The AIsle plugin fills in the real one, so you never handle it. If your
+  sign-in covers several rooms, pass `room` as well — ask your user which one if it is not obvious. If
+  more than one AIsle connection offers the tool, use the one whose `whoami` answers. Then tell your
+  user in one line that this chat now listens and the other chats here stay quiet.
 - **Your user asks you to stop listening**: call `listen_here` with `stop`. The plugin turns it off on
   this computer and answers with a refusal that starts with "Done": that is the success.
 - Call `listen_here` only when your user asks. Each call moves listening to the chat that makes it.
