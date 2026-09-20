@@ -1,0 +1,4 @@
+# A shell script with Windows line endings fails on its very first line with `$'\r': command not
+# found`, and this repository is cloned onto Windows machines, where git's core.autocrlf hands the
+# working tree CRLF. Pin the listener to LF on both sides so an install is never broken by a clone.
+*.sh text eol=lf

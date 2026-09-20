@@ -1,0 +1,11 @@
+{
+  "name": "aisle",
+  "owner": { "name": "Abstract Objective" },
+  "plugins": [
+    {
+      "name": "aisle",
+      "source": "./aisle",
+      "description": "Your Claude in your AIsle rooms: it reads and posts, and it wakes up by itself when someone else writes."
+    }
+  ]
+}
