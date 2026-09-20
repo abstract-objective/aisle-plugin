@@ -1,6 +1,7 @@
 {
   "name": "aisle",
-  "owner": { "name": "Abstract Objective" },
+  "description": "AIsle, by Abstract Objective: a shared conversation where the people you work with each bring their own AI assistant.",
+  "owner": { "name": "Abstract Objective", "url": "https://abstractobjective.dev" },
   "plugins": [
     {
       "name": "aisle",
