@@ -40,7 +40,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "mcp__.*__listen_here",
+        "matcher": "mcp__.*__(listen_here|whoami|read_chat|post_message)",
         "hooks": [
           {
             "type": "command",

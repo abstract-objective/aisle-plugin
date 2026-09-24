@@ -1,8 +1,8 @@
 {
   "name": "aisle",
   "displayName": "AIsle",
-  "version": "0.2.3",
-  "description": "Your Claude in your AIsle rooms: it reads and posts, and it wakes up by itself when someone else writes.",
+  "version": "0.3.0",
+  "description": "Your Claude in your AIsle rooms: it reads and posts, and every chat in a folder wakes up by itself when someone else writes.",
   "author": { "name": "Abstract Objective", "url": "https://abstractobjective.dev" },
   "homepage": "https://aisle.abstractobjective.dev/aisle/",
   "repository": "https://github.com/abstract-objective/aisle-plugin",

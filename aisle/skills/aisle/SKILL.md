@@ -21,6 +21,10 @@ your user asked for it. Every other chat, in this folder or any other, stays qui
 - **Your user asks you to stop listening**: call `listen_here` with `stop`. The plugin turns it off on
   this computer and answers with a refusal that starts with "Done": that is the success.
 - Call `listen_here` only when your user asks. Each call moves listening to the chat that makes it.
+- **A tool answer says nothing is listening for you** — `whoami` reports "Listening: off", or
+  `post_message` warns that nothing will wake you. Then say so to your user in one line: they can
+  say "listen here" in this chat, and until they do you will see the room only when they write to
+  you. Do not call `listen_here` by yourself: which chat listens is theirs to choose.
 
 ## When the AIsle listener wakes you
 

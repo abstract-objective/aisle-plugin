@@ -9,9 +9,12 @@
 #                              else in the room, then exit 2, which wakes the idle session. It never
 #                              learns what anyone wrote: /watch answers with numbers only.
 #
-# One chat per folder listens: the one the person asked, in words, to listen (D28). A person works on
-# many projects in many chats on one computer, and a room belongs to one of them, so every other chat,
-# in this folder or any other, stays silent. Nothing happens in a folder until the person asks.
+# One chat per folder listens, and the person never types to keep it that way (D38). Ofir, 2026-09-24:
+# "the listener need to be automatic - i dont want people to write listen here every 15 minutes - or at
+# all". So: the FIRST time AIsle is used in a folder the assistant asks one yes-or-no question, and
+# after that every new chat in that folder picks listening up by itself when it starts. The chat that
+# had it lets go without a word. Folders that were never answered yes stay silent, and so does every
+# other folder on the computer.
 #
 # Each folder has its own credential, made here and kept in the plugin's data folder. Claude only ever
 # carries its fingerprint (the token's id and the SHA-256 of its secret), which cannot watch anything.
@@ -86,10 +89,27 @@ if [ "$event" = "PreToolUse" ]; then
 fi
 
 if [ "$event" = "PostToolUse" ]; then
+  # Any AIsle tool at all runs this. A folder that has never answered gets one question (D38), asked
+  # by the assistant in its own words, once and never again — not a rule sheet, not a thing to type.
+  case "$(field tool_name)" in
+    *listen_here) : ;;
+    *)
+      [ -f "$FOLDER/answered" ] && exit 0
+      asked="$FOLDER/asked"
+      [ -f "$asked" ] && exit 0
+      mkdir -p "$FOLDER" || exit 0
+      date -u +%Y-%m-%dT%H:%M:%SZ > "$asked"
+      log "asked once whether to listen for $dir"
+      printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s"}}' "AIsle plugin: nothing in this folder wakes up when somebody writes in the room, and it has never been asked. Ask your user now, in one short line and nothing else: shall this chat listen for the room, yes or no? If yes, call listen_here. If no, say nothing more about it: this is asked once per folder, ever."
+      exit 0
+      ;;
+  esac
   # Only a call the room accepted picks this chat.
   printf '%s' "$input" | grep -q 'Listening is on' || exit 0
   mkdir -p "$FOLDER" || exit 0
   echo "$sid" > "$FOLDER/helper"
+  # This folder has said yes once. Every later chat here starts listening without asking again.
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$FOLDER/answered"
   # A fresh start: the first look reports what is unread, rather than counting from an old visit.
   rm -f "$DATA/after-$sid" "$DATA/said-lost-$sid"
   log "this chat now listens for $dir"
@@ -104,12 +124,27 @@ fi
 # A week-old session's notes are of no use to anyone.
 for pattern in 'after-*' 'said-*' 'pid-*'; do find "$DATA" -maxdepth 1 -type f -name "$pattern" -mtime +7 -delete 2>/dev/null; done
 
-# Only the chat picked for this folder listens. Everywhere else: silence.
+# A folder that has never said yes stays silent, whatever happens in it. A folder that was listening
+# before this version said yes by being picked at all: it keeps listening, and is not asked again.
+if [ ! -f "$FOLDER/answered" ]; then
+  [ -s "$FOLDER/helper" ] || exit 0
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$FOLDER/answered"
+  log "carried an older listening folder over to the automatic rule"
+fi
+
+# The newest chat in this folder is the one the person is in, so at its start it takes listening over
+# (D38). No question, nothing to type. The chat that had it notices at its next turn through the loop
+# and stops without a word. Stop, unlike SessionStart, never takes anything over: it runs after every
+# reply in every chat, and a room would ping-pong between two open chats forever.
 helper=$(cat "$FOLDER/helper" 2>/dev/null)
-[ -z "$helper" ] && exit 0
 if [ "$helper" != "$sid" ]; then
-  [ "$event" = "SessionStart" ] && log "quiet: another chat listens for $dir"
-  exit 0
+  if [ "$event" = "SessionStart" ]; then
+    echo "$sid" > "$FOLDER/helper"
+    rm -f "$DATA/after-$sid" "$DATA/said-lost-$sid"
+    log "took listening over for $dir (new chat)"
+  else
+    exit 0
+  fi
 fi
 mine() { [ "$(cat "$FOLDER/helper" 2>/dev/null)" = "$sid" ]; }
 
@@ -135,7 +170,7 @@ while true; do
   # The person may have picked another chat meanwhile. Then this one stops, and says nothing.
   if ! mine; then log "stop: another chat listens for $dir now"; exit 0; fi
   if [ "$code" = "401" ]; then
-    rm -f "$FOLDER/helper"
+    rm -f "$FOLDER/helper" "$FOLDER/answered" "$FOLDER/asked"
     log "stop: the room refused this folder's listener"
     say_once lost "AIsle: this chat stopped listening to the room. Either the room now listens somewhere else (another folder or computer), or the connection ended (the assistant was removed, replaced, or signed out). Tell your user in one line. Call listen_here again only if they ask you to."
   fi

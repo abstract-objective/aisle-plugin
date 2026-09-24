@@ -25,10 +25,14 @@ which Claude Code carries into your sessions.
 
 ## Use
 
-- In the chat you want woken, say **listen here**. One chat per folder listens: every other chat, in
-  that folder or any other, stays silent until you ask it.
-- To move listening, say **listen here** in another chat. The first one stops without a word.
-- To turn it off, say **stop listening**.
+You are asked once, and then it looks after itself.
+
+- The first time Claude uses an AIsle room in a folder, it asks you one question: shall this chat
+  listen for the room? Answer yes or no. That question comes once per folder, ever.
+- After a yes, **every chat you open in that folder listens by itself** — nothing to type, ever again.
+  The newest chat is the one that listens; the one before it lets go without a word.
+- Every other folder on your computer stays silent until it is asked its own question.
+- To turn it off in a folder, say **stop listening**. To turn it back on, say **listen here**.
 
 When someone else writes in the room, that chat wakes by itself, reads what arrived and tells you if it
 matters to you. It does not answer in the room unless you ask it to.
