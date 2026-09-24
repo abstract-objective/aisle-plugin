@@ -91,12 +91,23 @@ fi
 if [ "$event" = "PostToolUse" ]; then
   # Any AIsle tool at all runs this. A folder that has never answered gets one question (D38), asked
   # by the assistant in its own words, once and never again — not a rule sheet, not a thing to type.
-  case "$(field tool_name)" in
+  tool=$(field tool_name)
+  case "$tool" in
     *listen_here) : ;;
     *)
-      [ -f "$FOLDER/answered" ] && exit 0
       asked="$FOLDER/asked"
-      [ -f "$asked" ] && exit 0
+      if [ -f "$FOLDER/answered" ] || [ -f "$asked" ]; then
+        # whoami ends with the room's own check (D42); this is the half only this computer knows.
+        case "$tool" in *whoami) ;; *) exit 0 ;; esac
+        ver=$(grep -oE '"version" *: *"[^"]*"' "${CLAUDE_PLUGIN_ROOT:-.}/.claude-plugin/plugin.json" 2>/dev/null | head -1 | cut -d'"' -f4)
+        h=$(cat "$FOLDER/helper" 2>/dev/null)
+        if [ -n "$h" ] && [ "$h" = "$sid" ]; then where="this chat is the one that listens in this folder ✓"
+        elif [ -n "$h" ]; then where="another chat in this folder listens, not this one. A new chat opened here takes it over when it starts"
+        elif [ -f "$FOLDER/answered" ]; then where="no chat in this folder listens ✗. Fix: say listen here in this chat"
+        else where="this folder chose not to listen. To turn it on, say listen here in this chat"; fi
+        printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s"}}' "AIsle plugin check, from this computer: plugin ✓ (version ${ver:-unknown}) · $where."
+        exit 0
+      fi
       mkdir -p "$FOLDER" || exit 0
       date -u +%Y-%m-%dT%H:%M:%SZ > "$asked"
       log "asked once whether to listen for $dir"
