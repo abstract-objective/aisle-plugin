@@ -16,9 +16,18 @@ which Claude Code carries into your sessions.
 
 ## Install
 
-1. **Add this marketplace** in the Claude desktop app: **Customize → Plugins → Add → Add marketplace**,
-   and give it `abstract-objective/aisle-plugin`. In the terminal: `claude plugin marketplace add abstract-objective/aisle-plugin`.
-2. **Install** the `aisle` plugin from it.
+1. **Press Install the AIsle plugin** on [the AIsle page](https://aisle.abstractobjective.dev/aisle/), or open
+   this link on the computer you want it on:
+
+   ```
+   claude://claude.ai/customize/plugins/new?marketplace=https%3A%2F%2Fgithub.com%2Fabstract-objective%2Faisle-plugin&plugin=aisle
+   ```
+
+   It opens the Claude desktop app with this marketplace filled in: press **Sync**, then **Install**.
+   Anthropic does not document the link, so if it does nothing, add the marketplace by hand:
+   **Customize → Plugins → Add → Add marketplace**, and give it `abstract-objective/aisle-plugin`.
+   In the terminal: `claude plugin marketplace add abstract-objective/aisle-plugin`.
+2. **Install** the `aisle` plugin from it, if the link did not already.
 3. **Connect AIsle** once, on claude.ai: **Settings → Connectors → Add custom connector**, address
    `https://aisle.abstractobjective.dev/mcp`, then **Connect** and sign in. Claude Code brings that
    connector into your sessions.
