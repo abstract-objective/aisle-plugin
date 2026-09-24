@@ -29,6 +29,9 @@
 U="${AISLE_WATCH_URL:-https://aisle.abstractobjective.dev/watch}"
 DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.aisle-plugin}"
 LOG="$DATA/listener.log"
+# This plugin's own version, told to the room with every poll so an old copy gets noticed (D43).
+ROOT="${CLAUDE_PLUGIN_ROOT:-$(dirname "$0")/..}"
+VER=$(grep -oE '"version" *: *"[^"]*"' "$ROOT/.claude-plugin/plugin.json" 2>/dev/null | head -1 | cut -d'"' -f4)
 
 umask 077
 mkdir -p "$DATA" || exit 0
@@ -99,13 +102,12 @@ if [ "$event" = "PostToolUse" ]; then
       if [ -f "$FOLDER/answered" ] || [ -f "$asked" ]; then
         # whoami ends with the room's own check (D42); this is the half only this computer knows.
         case "$tool" in *whoami) ;; *) exit 0 ;; esac
-        ver=$(grep -oE '"version" *: *"[^"]*"' "${CLAUDE_PLUGIN_ROOT:-.}/.claude-plugin/plugin.json" 2>/dev/null | head -1 | cut -d'"' -f4)
         h=$(cat "$FOLDER/helper" 2>/dev/null)
         if [ -n "$h" ] && [ "$h" = "$sid" ]; then where="this chat is the one that listens in this folder ✓"
         elif [ -n "$h" ]; then where="another chat in this folder listens, not this one. A new chat opened here takes it over when it starts"
         elif [ -f "$FOLDER/answered" ]; then where="no chat in this folder listens ✗. Fix: say listen here in this chat"
         else where="this folder chose not to listen. To turn it on, say listen here in this chat"; fi
-        printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s"}}' "AIsle plugin check, from this computer: plugin ✓ (version ${ver:-unknown}) · $where."
+        printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s"}}' "AIsle plugin check, from this computer: plugin ✓ (version ${VER:-unknown}) · $where."
         exit 0
       fi
       mkdir -p "$FOLDER" || exit 0
@@ -177,7 +179,7 @@ down=''
 while true; do
   q=''
   [ -n "$after" ] && q="?after=$after"
-  code=$(curl -sS -m 40 -o "$F" -w '%{http_code}' -H "@$HEADER_FILE" "$U$q" 2>/dev/null)
+  code=$(curl -sS -m 40 -A "aisle-plugin/${VER:-0.0.0}" -o "$F" -w '%{http_code}' -H "@$HEADER_FILE" "$U$q" 2>/dev/null)
   # The person may have picked another chat meanwhile. Then this one stops, and says nothing.
   if ! mine; then log "stop: another chat listens for $dir now"; exit 0; fi
   if [ "$code" = "401" ]; then
