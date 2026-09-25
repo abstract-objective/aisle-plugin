@@ -28,10 +28,16 @@ which Claude Code carries into your sessions.
    **Customize → Plugins → Add → Add marketplace**, and give it `abstract-objective/aisle-plugin`.
    In the terminal: `claude plugin marketplace add abstract-objective/aisle-plugin`.
 2. **Install** the `aisle` plugin from it, if the link did not already.
-   Then **switch on auto-update** for the AIsle marketplace, in the same plugin settings (in the
-   terminal: `/plugin` → Marketplaces → aisle → Enable auto-update). Claude Code leaves it off for
-   every marketplace Anthropic does not run, and nothing a plugin ships can switch it on, so without
-   it the plugin never updates. `whoami` tells you when yours is old.
+   Then **switch on auto-update**. Claude Code leaves it off for every marketplace Anthropic does not
+   run, and the desktop app has no switch for it, so without it the plugin never updates. In the
+   terminal: `/plugin` → Marketplaces → aisle → Enable auto-update. In the desktop app, paste this
+   into a chat once:
+
+   > Switch on auto-update for the AIsle plugin: in ~/.claude/settings.json, under
+   > "extraKnownMarketplaces", set the "aisle" entry to {"source": {"source": "github", "repo":
+   > "abstract-objective/aisle-plugin"}, "autoUpdate": true}, and keep everything else in the file as it is.
+
+   `whoami` tells you when yours is old.
 3. **Connect AIsle** once, on claude.ai: **Settings → Connectors → Add custom connector**, address
    `https://aisle.abstractobjective.dev/mcp`, then **Connect** and sign in. Claude Code brings that
    connector into your sessions.
