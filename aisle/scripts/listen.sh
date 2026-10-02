@@ -25,22 +25,55 @@
 # after every reply and a listener that repeats itself wakes the session in a loop (seen 2026-09-19).
 #
 # Deliberately no backslashes anywhere in this file: on Windows it runs in Git Bash, and shells there
-# have eaten them before. It needs bash, curl, grep, cut, tr, sed, head, base64 and a SHA-256 tool,
-# which Git Bash, macOS and Linux all have.
+# have eaten them before. It needs bash, curl, grep, cut, tr, sed, head, awk, base64 and a SHA-256
+# tool, which Git Bash, macOS and Linux all have.
 
 U="${AISLE_WATCH_URL:-https://aisle.abstractobjective.dev/watch}"
 DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.aisle-plugin}"
 LOG="$DATA/listener.log"
+
+umask 077
+# The hook's input is JSON on stdin. Read it without ever blocking on a stdin that stays open.
+IFS= read -r -t 3 -d '' input
+
+# The folders that said yes to a room, in "$DATA/yes" as |key|key|, where a key is the folder's name in
+# letters and digits only, compared in any case, so bash can make it without starting a program.
+yes_key() { key="${1//[!A-Za-z0-9]/}"; }
+
+# The edit hook runs before every Edit and Write in every project on this computer, because the plugin
+# is installed for the person and not per project. So in a folder that never said yes it must cost no
+# more than bash starting, and it uses only bash's own commands until it knows. 0.3.4 did all the work
+# below first and took about a second per edit (measured 2026-10-02); bash alone starts in 0.1 s.
+re='"hook_event_name" *: *"([A-Za-z]*)"'
+if [[ $input =~ $re ]] && [ "${BASH_REMATCH[1]}" = PreToolUse ]; then
+  re='"tool_name" *: *"([^"]*)"'
+  t=''
+  [[ $input =~ $re ]] && t="${BASH_REMATCH[1]}"
+  case "$t" in
+    Edit|Write|MultiEdit|NotebookEdit)
+      d="$CLAUDE_PROJECT_DIR"
+      re='"cwd" *: *"([^"]*)"'
+      [ -z "$d" ] && [[ $input =~ $re ]] && d="${BASH_REMATCH[1]}"
+      # No list yet (the first edit after an update): the long way below makes it.
+      if [ -f "$DATA/yes" ]; then
+        IFS= read -r -d '' list < "$DATA/yes"
+        yes_key "$d"
+        [ -n "$key" ] || exit 0
+        shopt -s nocasematch
+        case "$list" in *"|$key|"*) ;; *) exit 0 ;; esac
+        shopt -u nocasematch
+      fi
+      ;;
+  esac
+fi
+
 # This plugin's own version, told to the room with every poll so an old copy gets noticed (D43).
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(dirname "$0")/..}"
 VER=$(grep -oE '"version" *: *"[^"]*"' "$ROOT/.claude-plugin/plugin.json" 2>/dev/null | head -1 | cut -d'"' -f4)
 
-umask 077
 mkdir -p "$DATA" || exit 0
 
-# The hook's input is JSON on stdin. Read it without ever blocking on a stdin that stays open.
-IFS= read -r -t 3 -d '' input
-field() { printf '%s' "$input" | grep -oE '"'"$1"'" *: *"[^"]*"' | head -1 | cut -d'"' -f4; }
+field(){ printf '%s' "$input" | grep -oE '"'"$1"'" *: *"[^"]*"' | head -1 | cut -d'"' -f4; }
 sid=$(field session_id | tr -cd 'A-Za-z0-9-')
 event=$(field hook_event_name | tr -cd 'A-Za-z')
 [ -z "$sid" ] && sid=unknown
@@ -81,6 +114,31 @@ folder_token() {
 }
 fingerprint() { printf '%s.%s' "${1%%.*}" "$(printf '%s' "${1#*.}" | sha)"; }
 
+# The list the edit hook reads first (see yes_key): made from every folder here that said yes, and kept
+# up to date by each folder's own listener. A folder missing from it only loses its marks until its
+# next chat starts or replies.
+yes_index() {
+  local list='|' f p
+  for f in "$DATA"/folders/*/answered; do
+    [ -f "$f" ] || continue
+    p=$(cat "${f%/answered}/path" 2>/dev/null)
+    [ -n "$p" ] || continue
+    yes_key "$p"
+    [ -n "$key" ] && list="$list$key|"
+  done
+  printf '%s' "$list" > "$DATA/yes"
+}
+yes_add() {
+  [ -f "$DATA/yes" ] || yes_index
+  yes_key "$1"
+  [ -n "$key" ] || return 0
+  local list
+  list=$(cat "$DATA/yes" 2>/dev/null)
+  [ -n "$list" ] || list='|'
+  case "$list" in *"|$key|"*) return 0 ;; esac
+  printf '%s%s|' "$list" "$key" > "$DATA/yes"
+}
+
 # Live marks (D45): before Claude edits a file, tell the room which file, and hear who else is in it
 # right now. Only in a folder that said yes to the room, and only the path inside the project, never
 # what is in the file. It never stands in the edit's way: a slow or absent room means it says nothing.
@@ -88,6 +146,7 @@ tool=$(field tool_name)
 case "$tool" in
   Edit|Write|MultiEdit|NotebookEdit)
     [ "$event" = "PreToolUse" ] || exit 0
+    [ -f "$DATA/yes" ] || yes_index
     { [ -f "$FOLDER/answered" ] && [ -s "$FOLDER/token" ]; } || exit 0
     file=$(field file_path)
     [ -z "$file" ] && file=$(field notebook_path)
@@ -103,10 +162,25 @@ case "$tool" in
       printf '%s' "$root" > "$FOLDER/root"
       printf '%s' "$repo" > "$FOLDER/repo"
     fi
+    # Only the path inside the project leaves this computer, never the folders above it, which carry the
+    # person's name (0.3.4 sent them, and the room kept only the inside part). Claude Code writes each
+    # backslash of a Windows path doubled, as JSON does; the awk call makes one without this file holding
+    # any. Whatever else is escaped stays escaped, so the body is still valid JSON.
+    bs=$(awk 'BEGIN { printf "%c", 92 }')
+    f="${file//"$bs$bs"/"/"}"
+    r="$root"
+    re='^/([A-Za-z])/(.*)$'
+    [[ $f =~ $re ]] && f="${BASH_REMATCH[1]}:/${BASH_REMATCH[2]}"
+    [[ $r =~ $re ]] && r="${BASH_REMATCH[1]}:/${BASH_REMATCH[2]}"
+    # A drive letter means Windows, where a folder's name is the same in any case.
+    re='^[A-Za-z]:/'
+    [[ $r =~ $re ]] && shopt -s nocasematch
+    [[ $f == "$r"/* ]] || exit 0
+    shopt -u nocasematch
+    rel="${f:${#r}+1}"
     HEADER_FILE="$FOLDER/header"
     printf 'Authorization: Bearer %s' "$(folder_token)" > "$HEADER_FILE"
-    # The path goes as Claude Code wrote it in the hook's JSON, escapes and all, so it stays valid JSON.
-    body=$(printf '{"repo":"%s","root":"%s","path":"%s","session":"%s"}' "$repo" "$root" "$file" "$sid")
+    body=$(printf '{"repo":"%s","path":"%s","session":"%s"}' "$repo" "$rel" "$sid")
     reply=$(curl -sS -m 2 -A "aisle-plugin/${VER:-0.0.0}" -H "@$HEADER_FILE" -H 'Content-Type: application/json' --data-binary "$body" "${U%/watch}/marks" 2>/dev/null)
     say=$(printf '%s' "$reply" | grep -oE '"say":"[^"]*"' | head -1 | cut -d'"' -f4)
     [ -z "$say" ] && exit 0
@@ -166,6 +240,7 @@ if [ "$event" = "PostToolUse" ]; then
   echo "$sid" > "$FOLDER/helper"
   # This folder has said yes once. Every later chat here starts listening without asking again.
   date -u +%Y-%m-%dT%H:%M:%SZ > "$FOLDER/answered"
+  yes_add "$dir"
   # A fresh start: the first look reports what is unread, rather than counting from an old visit.
   rm -f "$DATA/after-$sid" "$DATA/said-lost-$sid"
   log "this chat now listens for $dir"
@@ -187,6 +262,7 @@ if [ ! -f "$FOLDER/answered" ]; then
   date -u +%Y-%m-%dT%H:%M:%SZ > "$FOLDER/answered"
   log "carried an older listening folder over to the automatic rule"
 fi
+yes_add "$dir"
 
 # The newest chat in this folder is the one the person is in, so at its start it takes listening over
 # (D38). No question, nothing to type. The chat that had it notices at its next turn through the loop
@@ -227,6 +303,7 @@ while true; do
   if ! mine; then log "stop: another chat listens for $dir now"; exit 0; fi
   if [ "$code" = "401" ]; then
     rm -f "$FOLDER/helper" "$FOLDER/answered" "$FOLDER/asked"
+    yes_index
     log "stop: the room refused this folder's listener"
     say_once lost "AIsle: this chat stopped listening to the room. Either the room now listens somewhere else (another folder or computer), or the connection ended (the assistant was removed, replaced, or signed out). Tell your user in one line. Call listen_here again only if they ask you to."
   fi
