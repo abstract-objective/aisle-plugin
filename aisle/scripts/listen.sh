@@ -8,6 +8,8 @@
 #   SessionStart and Stop      the listener, in that one chat only: wait for a message from someone
 #                              else in the room, then exit 2, which wakes the idle session. It never
 #                              learns what anyone wrote: /watch answers with numbers only.
+#   PreToolUse, an edit        live marks (D45): says which file is about to change, and tells Claude
+#                              who else in the room is editing it right now
 #
 # One chat per folder listens, and the person never types to keep it that way (D38). Ofir, 2026-09-24:
 # "the listener need to be automatic - i dont want people to write listen here every 15 minutes - or at
@@ -78,6 +80,47 @@ folder_token() {
   cat "$FOLDER/token"
 }
 fingerprint() { printf '%s.%s' "${1%%.*}" "$(printf '%s' "${1#*.}" | sha)"; }
+
+# Live marks (D45): before Claude edits a file, tell the room which file, and hear who else is in it
+# right now. Only in a folder that said yes to the room, and only the path inside the project, never
+# what is in the file. It never stands in the edit's way: a slow or absent room means it says nothing.
+tool=$(field tool_name)
+case "$tool" in
+  Edit|Write|MultiEdit|NotebookEdit)
+    [ "$event" = "PreToolUse" ] || exit 0
+    { [ -f "$FOLDER/answered" ] && [ -s "$FOLDER/token" ]; } || exit 0
+    file=$(field file_path)
+    [ -z "$file" ] && file=$(field notebook_path)
+    [ -z "$file" ] && exit 0
+    # The project: its root here, and a name every clone of it shares, a hash of its first commit.
+    root=$(cat "$FOLDER/root" 2>/dev/null)
+    repo=$(cat "$FOLDER/repo" 2>/dev/null)
+    if [ -z "$root" ] || [ -z "$repo" ]; then
+      root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
+      first=$(git -C "$dir" rev-list --max-parents=0 HEAD 2>/dev/null | tail -n 1)
+      { [ -n "$root" ] && [ -n "$first" ]; } || exit 0
+      repo=$(printf 'aisle-repo:%s' "$first" | sha | cut -c1-32)
+      printf '%s' "$root" > "$FOLDER/root"
+      printf '%s' "$repo" > "$FOLDER/repo"
+    fi
+    HEADER_FILE="$FOLDER/header"
+    printf 'Authorization: Bearer %s' "$(folder_token)" > "$HEADER_FILE"
+    # The path goes as Claude Code wrote it in the hook's JSON, escapes and all, so it stays valid JSON.
+    body=$(printf '{"repo":"%s","root":"%s","path":"%s","session":"%s"}' "$repo" "$root" "$file" "$sid")
+    reply=$(curl -sS -m 2 -A "aisle-plugin/${VER:-0.0.0}" -H "@$HEADER_FILE" -H 'Content-Type: application/json' --data-binary "$body" "${U%/watch}/marks" 2>/dev/null)
+    say=$(printf '%s' "$reply" | grep -oE '"say":"[^"]*"' | head -1 | cut -d'"' -f4)
+    [ -z "$say" ] && exit 0
+    log "live mark: someone else is in a file this chat is about to edit"
+    if printf '%s' "$reply" | grep -qE '"ask":true'; then
+      # A file that cannot be merged: the person decides, and Claude knows why it is being asked.
+      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"%s","additionalContext":"%s"}}' "$say" "$say"
+    else
+      # No decision at all, so the person's own permission settings apply exactly as before.
+      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}' "$say"
+    fi
+    exit 0
+    ;;
+esac
 
 if [ "$event" = "PreToolUse" ]; then
   if printf '%s' "$input" | grep -qE '"fingerprint" *: *"stop"'; then

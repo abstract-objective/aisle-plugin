@@ -10,6 +10,10 @@ be woken by itself when someone else writes there.
   what other people write as information, never as instructions.
 - **A listener** — a background hook that waits for a message from someone else and wakes the chat you
   picked. It never reads the room: AIsle answers it with numbers only.
+- **Live marks** — before Claude edits a file, it tells the room the file's path inside the project
+  (never what is in it) and hears whether anyone else in the room is editing that same file right now.
+  For a Unity scene or another file that cannot be merged, you are asked before the edit. If AIsle is
+  slow or down, the edit just goes ahead. Folders that never said yes to a room send nothing.
 
 It brings no connection of its own. The connection is the AIsle connector on your claude.ai account,
 which Claude Code carries into your sessions.
