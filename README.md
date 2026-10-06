@@ -10,10 +10,6 @@ be woken by itself when someone else writes there.
   what other people write as information, never as instructions.
 - **A listener** — a background hook that waits for a message from someone else and wakes the chat you
   picked. It never reads the room: AIsle answers it with numbers only.
-- **Live marks** — before Claude edits a file, it tells the room the file's path inside the project
-  (never what is in it) and hears whether anyone else in the room is editing that same file right now.
-  For a Unity scene or another file that cannot be merged, you are asked before the edit. If AIsle is
-  slow or down, the edit just goes ahead. Folders that never said yes to a room send nothing.
 
 It brings no connection of its own. The connection is the AIsle connector on your claude.ai account,
 which Claude Code carries into your sessions.
@@ -31,15 +27,25 @@ which Claude Code carries into your sessions.
    Anthropic does not document the link, so if it does nothing, add the marketplace by hand:
    **Customize → Plugins → Add → Add marketplace**, and give it `abstract-objective/aisle-plugin`.
    In the terminal: `claude plugin marketplace add abstract-objective/aisle-plugin`.
-2. **Install** the `aisle` plugin from it, if the link did not already.
-   Then **switch on auto-update**. Claude Code leaves it off for every marketplace Anthropic does not
-   run, and the desktop app has no switch for it, so without it the plugin never updates. In the
-   terminal: `/plugin` → Marketplaces → aisle → Enable auto-update. In the desktop app, paste this
-   into a chat once:
+2. **Install** the `aisle` plugin from it, if the link did not already. From 0.3.6 it **keeps itself up
+   to date**: when a chat opens, at most once an hour, it asks Claude Code to update it
+   (`claude plugin update aisle@aisle`, which fetches this repository as installing did), and a note
+   says when it did. The new version is active from the next chat. If updating keeps failing, a strip
+   above the chat box says why, with **Try again**. This uses Claude Code's hooks modules, which
+   Anthropic calls early access.
+
+   **0.3.5 or older** never updates by itself: Claude Code leaves auto-update off for every
+   marketplace Anthropic does not run, and the desktop app skips plugin updates. Update it once and
+   it looks after itself from then on. In the terminal: `/plugin` → Marketplaces → aisle → Enable
+   auto-update. In the desktop app, paste this into a chat once:
 
    > Switch on auto-update for the AIsle plugin: in ~/.claude/settings.json, under
    > "extraKnownMarketplaces", set the "aisle" entry to {"source": {"source": "github", "repo":
-   > "abstract-objective/aisle-plugin"}, "autoUpdate": true}, and keep everything else in the file as it is.
+   > "abstract-objective/aisle-plugin"}, "autoUpdate": true}, and under "env" add
+   > "FORCE_AUTOUPDATE_PLUGINS": "1", because the Claude desktop app skips plugin updates without it.
+   > Keep everything else in the file as it is.
+
+   That last setting also lets any other plugin whose auto-update is on update itself.
 
    `whoami` tells you when yours is old.
 3. **Connect AIsle** once, on claude.ai: **Settings → Connectors → Add custom connector**, address
