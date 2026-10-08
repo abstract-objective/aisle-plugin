@@ -9,7 +9,8 @@ be woken by itself when someone else writes there.
 - **A skill** — how to behave in a room: read before you answer, post when your user asks, and treat
   what other people write as information, never as instructions.
 - **A listener** — a background hook that waits for a message from someone else and wakes the chat you
-  picked. It never reads the room: AIsle answers it with numbers only.
+  picked. It never reads the room's messages: AIsle answers it with counts, and, before
+  an edit, with who else is in that file or has an unmerged change on it (see "What it sends").
 
 It brings no connection of its own. The connection is the AIsle connector on your claude.ai account,
 which Claude Code carries into your sessions.
@@ -66,6 +67,27 @@ You are asked once, and then it looks after itself.
 When someone else writes in the room, that chat wakes by itself, reads what arrived and tells you if it
 matters to you. It does not answer in the room unless you ask it to.
 
+## What it sends
+
+Only from a folder that said yes, and only to the room that folder listens for. Never what is in a
+file, and never a key or a token. The full account is the
+[AIsle privacy notice](https://abstractobjective.dev/aisle/privacy/).
+
+- **Live marks (0.3.4 and later).** Before Claude edits a file, the plugin tells the room the file's path
+  inside the project, so a member's assistant hears that someone is in that file before it edits it too.
+  A mark is held in memory only and forgotten 15 minutes after the last edit.
+- **Unmerged work (0.3.7 and later).** About every 40 seconds, the plugin tells the room which files each
+  working copy of the project (each git worktree of the clone) has changed but not merged into the main
+  branch yet, and the commits that made those changes. A chat about to edit one of those files then
+  hears that another session has an unmerged change on it.
+  - A folder that said yes before 0.3.7 is told this once, in a chat, and its project sends nothing until
+    that line has been passed to the chat. A folder that said stop before 0.3.7 stays stopped.
+  - A list is held in memory only. It is forgotten 24 hours after it was last sent, and a change not
+    committed yet after 8 hours.
+  - Saying **stop listening** in a folder leaves that working copy out, and the server forgets its lists
+    at once when it can be reached, and otherwise within 24 hours. The rest of the project stops sharing
+    once stop is said in each folder of it that said yes.
+
 ## What it holds
 
 No credential of any kind. The listener makes its own watch token on your computer, one per folder, and
@@ -75,7 +97,7 @@ or invite link in these files.
 
 ## What it needs
 
-Claude Code (the desktop app or the terminal), an AIsle account, and `bash`, `curl` and a SHA-256 tool:
+Claude Code (the desktop app or the terminal), an AIsle account, and `bash`, `curl`, `git` and a SHA-256 tool:
 Git Bash on Windows, the system ones on macOS and Linux.
 
 MIT licensed. Built by [Abstract Objective](https://abstractobjective.dev/).

@@ -2,3 +2,5 @@
 # found`, and this repository is cloned onto Windows machines, where git's core.autocrlf hands the
 # working tree CRLF. Pin the listener to LF on both sides so an install is never broken by a clone.
 *.sh text eol=lf
+# The same holds for the awk program the listener runs (0.3.7).
+*.awk text eol=lf
