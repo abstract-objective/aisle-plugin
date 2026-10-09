@@ -32,11 +32,36 @@ export const AUTO_REOPEN = false;
 /** How long after a chat opens the module looks, so the first prompt never waits on it (as the self-update does). */
 export const LOOK_AFTER_MS = 3000;
 
-/** How long Reopen may run: the command hands the chat to the desktop app and ends. */
+/** How long Reopen may run: the system hands the link to the desktop app and ends. */
 export const REOPEN_TIMEOUT_MS = 15 * 1000;
 
-/** After a Reopen that went through, how long the folder has to start listening before the strip says what to do. */
-export const CONFIRM_AFTER_MS = 90 * 1000;
+/**
+ * The desktop app's own link to a chat: the one `claude --desktop --resume <id>` opens. That command cannot do
+ * it from here: it refuses to run when its output is captured, as every command a hooks module runs is ("can't
+ * run non-interactively (... or redirected output)", Claude Code 2.1.286, seen 2026-10-09, which is how 0.3.8's
+ * Reopen failed). Opened on Ofir's PC on 2026-10-09, it switched the app to that folder's chat and made no
+ * copy of it. Null for anything but a session id, so nothing else ever reaches the link.
+ */
+export function resumeLink(session) {
+  const id = String(session ?? '').trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ? `claude://resume?session=${id}` : null;
+}
+
+/**
+ * The command that hands a link to the app that registered it, as Claude Code does for `--desktop`: on Windows,
+ * rundll32's FileProtocolHandler, by its full path (it opens no window of its own); elsewhere `open`.
+ */
+export function openLinkCommand(link, windows, systemRoot) {
+  if (!windows) return ['open', link];
+  const root = String(systemRoot || 'C:\\Windows').replace(/[\\/]+$/, '');
+  return [`${root}\\System32\\rundll32.exe`, 'url.dll,FileProtocolHandler', link];
+}
+
+/** A failure's reason in one short line: its first line, at most 160 characters. */
+export function shortReason(text) {
+  const line = String(text ?? '').split(/\r?\n/).map((s) => s.trim()).find(Boolean) ?? '';
+  return line.length > 160 ? `${line.slice(0, 159)}…` : line;
+}
 
 /** While a strip is up, how often it looks again, so it goes as soon as that folder listens again. */
 export const RECHECK_MS = 20 * 1000;
@@ -173,21 +198,29 @@ export function remember(answered, offer) {
 
 /**
  * Whether the folder listens again since the offer: a new beat, and a fresh one. After a Reopen it says the
- * chat opened and its loop runs; while the sidebar line is up it says the person opened it some other way.
+ * person sent that chat a message and its loop runs; while the sidebar line is up, that they opened it some other way.
  */
 export function listeningAgain(beatText, offer, now) {
   const beat = beatSeconds(beatText);
   return beat !== null && String(beat) !== offer.key && now - beat * 1000 <= STALE_MS;
 }
 
+// The desktop app starts a chat's Claude Code only when someone sends that chat a message: opening it, from the
+// sidebar or by its link, shows it and starts nothing (seen 2026-10-09: Reopen switched the app to the right chat,
+// and its listening began only once Ofir typed there). So every line says the one thing that starts it, and says
+// it before the press, since the app shows the other chat the moment Reopen is pressed.
+
 /** The strip. It says what the beat knows, that the folder stopped listening, and not why. */
-export const askLine = (name) => `AIsle: ${name} stopped listening to the room. Reopen its chat?`;
+export const askLine = (name) => `AIsle: ${name} stopped listening to the room. Reopen its chat? Any message there starts it again.`;
 
 /** While Reopen runs. */
 export const openingLine = (name) => `AIsle: opening the chat for ${name}…`;
 
-/** The note once Reopen went through. */
-export const openedNote = (name) => `AIsle: the chat for ${name} is opening. It starts listening when it opens.`;
+/** Once Reopen went through: the note, and the strip until that folder listens again. */
+export const openedNote = (name) => `AIsle: send any message in the chat for ${name}, and it starts listening again.`;
 
-/** The one thing to do when Reopen failed, or the folder did not start listening after it. */
-export const sidebarLine = (name) => `AIsle: open the chat for ${name} from the sidebar; it starts listening when it opens.`;
+/** The one thing to do when Reopen failed. */
+export const sidebarLine = (name) => `AIsle: open the chat for ${name} from the sidebar and send it any message; it starts listening then.`;
+
+/** One dim line in the chat's transcript, never sent to Claude, saying why a Reopen did not open the chat. */
+export const failedNote = (name, why) => `AIsle: Reopen did not open the chat for ${name}${why ? ` (${why})` : ''}.`;

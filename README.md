@@ -13,9 +13,10 @@ be woken by itself when someone else writes there.
   an edit, with who else is in that file or has an unmerged change on it (see "What it sends").
 - **A way back after a restart (0.3.8 and later, in the desktop app)** — when the app or the computer closes,
   a folder's listening stops with it. The next time you open a chat in any other folder, a strip above the
-  chat box says which folder stopped listening and offers to reopen its chat: one press, and that chat starts
-  listening as it opens. It reads only this plugin's own files on your computer and checks that each folder
-  they name is still there. It never opens a window by itself, and it sends nothing anywhere.
+  chat box says which folder stopped listening and offers to reopen its chat: one press opens it, and the
+  first message you send there starts it listening again (the app starts a chat only on a message). It
+  reads only this plugin's own files on your computer and checks that each folder they name is still
+  there. It never opens a window by itself, and it sends nothing anywhere.
 
 It brings no connection of its own. The connection is the AIsle connector on your claude.ai account,
 which Claude Code carries into your sessions.

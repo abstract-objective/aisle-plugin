@@ -1,18 +1,20 @@
 // The way back after a restart (D56). When the app or the computer closes, the listening loop of every folder
 // that said yes dies with it, and nothing brings it back until that folder's chat opens again. So when a chat
 // opens in any folder, this looks, with no server call, for a folder whose loop stopped (its beat, which
-// listen.sh writes at every turn, is old), and shows one strip above the chat box. Reopen runs the app's own
-// program to open that folder's chat, which starts listening as it opens; Not now leaves it until that folder
-// has listened and stopped again. If Reopen fails, or the folder does not start listening after it, the strip
-// says the one thing to do instead. It never opens a window by itself (AUTO_REOPEN, Ofir's choice).
+// listen.sh writes at every turn, is old), and shows one strip above the chat box. Reopen opens the app's own
+// link to that folder's chat, which starts listening once it is sent any message (the app starts a chat only
+// then), and the strip says so until it does; Not now leaves it until that folder has listened and stopped
+// again. If Reopen fails, the strip says the one thing to do instead, and one dim line in the transcript says
+// why. It never opens a window by itself (AUTO_REOPEN, Ofir's choice).
 // The desktop app only, in 0.3.8 (drawsOn, looksIn): the beat cannot tell an app that closed from a chat
 // closed on purpose, and in the terminal every exit would bring a strip.
 // A hooks module, like update.mjs: no Node, `h` is the element factory and `$` reaches everything outside,
 // and nothing here may throw or make the person wait. It reads the plugin's own data folder, and checks that
 // each folder named there is still on the computer; nothing else.
 import {
-  AUTO_REOPEN, LOOK_AFTER_MS, REOPEN_TIMEOUT_MS, CONFIRM_AFTER_MS, RECHECK_MS, dataFolderFromRoot, onWindows, hostPath,
-  offers, remember, listeningAgain, drawsOn, looksIn, askLine, openingLine, openedNote, sidebarLine,
+  AUTO_REOPEN, LOOK_AFTER_MS, REOPEN_TIMEOUT_MS, RECHECK_MS, dataFolderFromRoot, onWindows, hostPath,
+  offers, remember, listeningAgain, drawsOn, looksIn, askLine, openingLine, openedNote, sidebarLine, failedNote,
+  resumeLink, openLinkCommand, shortReason,
 } from './reopen-rules.mjs';
 
 /** What the store keeps of the offers answered, for every chat on this computer. */
@@ -20,7 +22,7 @@ const ANSWERED = 'reopenAnswered';
 
 let cwd = '';        // the folder this chat runs in
 let me = '';         // this chat's session id
-let shown = null;    // { offer, state: 'ask' | 'opening' | 'sidebar' } while the strip is up
+let shown = null;    // { offer, state: 'ask' | 'opening' | 'opened' | 'sidebar' } while the strip is up
 let looking = null;  // the timer that looks again while the strip is up
 
 /** The offers the data folder holds now, newest stop first. */
@@ -111,29 +113,39 @@ async function reopen($, o) {
   draw($, { offer: o, state: 'opening' });
   await answer($, o);
   let ok = false;
+  let why = '';
   try {
-    const exe = await $.env.get('CLAUDE_CODE_EXECPATH');
-    if (exe) {
-      const ran = await $.process.run([exe, '--desktop', '--resume', o.helper], { cwd: hostPath(o.path, onWindows($.plugin.root)), stdin: '', timeoutMs: REOPEN_TIMEOUT_MS });
+    // The app's own link for that chat, handed to the system the way Claude Code's own desktop flag does: that
+    // command itself refuses to run here, since a hooks module captures what it writes (resumeLink).
+    const link = resumeLink(o.helper);
+    const windows = onWindows($.plugin.root);
+    if (!link) why = 'no session id for that chat';
+    else {
+      const command = openLinkCommand(link, windows, windows ? await $.env.get('SystemRoot') : '');
+      const ran = await $.process.run(command, { cwd: hostPath(o.path, windows), stdin: '', timeoutMs: REOPEN_TIMEOUT_MS });
       ok = ran.exitCode === 0;
+      if (!ok) why = `exit ${ran.exitCode}${shortReason(ran.stderr) ? `: ${shortReason(ran.stderr)}` : ''}`;
     }
-  } catch {
+  } catch (err) {
     // It could not start, or ran past its time: the strip says what to do instead.
+    why = shortReason(err?.message ?? err);
   }
-  if (!ok) return draw($, { offer: o, state: 'sidebar' });
+  if (!ok) {
+    note($, failedNote(o.name, why));
+    return draw($, { offer: o, state: 'sidebar' });
+  }
+  // The link went through, and the app shows that chat. It starts only on a message, so the strip says to send
+  // one, here too, until that folder's loop goes round (look, every RECHECK_MS); it never runs the link again.
   $.ui.toast(openedNote(o.name), { timeoutMs: 8000 });
-  draw($, null);
-  // The command went through; the folder's loop says whether the chat really opened.
-  $.clock.after(CONFIRM_AFTER_MS, () => confirm($, o));
-  await look($);
+  draw($, { offer: o, state: 'opened' });
 }
 
-async function confirm($, o) {
+/** A dim line in this chat's transcript, never sent to Claude: why a press did not work, for whoever looks. */
+function note($, text) {
   try {
-    if ((await listening($, o)) || shown?.state === 'opening') return;
-    draw($, { offer: o, state: 'sidebar' });
+    $.ui.log(text);
   } catch {
-    // Nothing to say then.
+    // The strip still says what to do.
   }
 }
 
@@ -186,6 +198,7 @@ export const register = (on) => {
     const { offer: o, state } = shown;
     const hide = (label) => h(Button, { key: 'aisle-reopen-later', label, role: 'dismiss', onPress: () => later($, o) });
     if (state === 'opening') return h(Box, null, h(Text, null, openingLine(o.name)));
+    if (state === 'opened') return h(Box, null, h(Text, null, `${openedNote(o.name)} `), hide('Hide'));
     if (state === 'sidebar') return h(Box, null, h(Text, null, `${sidebarLine(o.name)} `), hide('Hide'));
     return h(Box, null,
       h(Text, null, `${askLine(o.name)} `),
