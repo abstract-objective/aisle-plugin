@@ -1,6 +1,6 @@
 {
   "modules": [
-    "./update.mjs"
+    "./index.mjs"
   ],
   "hooks": {
     "SessionStart": [

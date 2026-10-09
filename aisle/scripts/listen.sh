@@ -1332,7 +1332,19 @@ case "$tool" in
     header_of "$TOK"
     HEADER_FILE="$TOK/header"
     body="{${q}repo${q}:${q}$repo${q},${q}path${q}:${q}$rel${q},${q}session${q}:${q}$sid${q}}"
-    reply=$(curl -sS -m 2 -A "aisle-plugin/${VER:-0.0.0}" -H "@$HEADER_FILE" -H 'Content-Type: application/json' --data-binary "$body" "${U%/watch}/marks" 2>/dev/null)
+    # A room that gave no answer at all is not asked again for a minute, or every edit would wait the full
+    # 2 s on it while it is down. An answer of any kind, an error too, rests nothing. By bash alone.
+    reply=''
+    stamp
+    rested=0 base=''
+    [ -f "$DATA/marks-rest" ] && IFS="$TAB" read -r rested base < "$DATA/marks-rest"
+    case "$rested" in ''|*[!0-9]*) rested=0 ;; esac
+    if [ "$base" != "${U%/watch}" ] || [ $(( NOW - rested )) -ge 60 ] || [ "$NOW" -lt "$rested" ]; then
+      if ! reply=$(curl -sS -m 2 -A "aisle-plugin/${VER:-0.0.0}" -H "@$HEADER_FILE" -H 'Content-Type: application/json' --data-binary "$body" "${U%/watch}/marks" 2>/dev/null); then
+        keep "$DATA/marks-rest" "$NOW$TAB${U%/watch}"
+        log "live marks: the room did not answer, so the next minute's edits do not ask it"
+      fi
+    fi
     say=''
     re='"say":"([^"]*)"'
     [[ $reply =~ $re ]] && say="${BASH_REMATCH[1]}"
@@ -1564,6 +1576,13 @@ lost() {
   say_once lost "AIsle: this chat stopped listening to the room: the room no longer knows this folder (the assistant was removed, replaced, or signed out). Tell your user in one line. Call listen_here again only if they ask you to."
 }
 
+# The heartbeat (D56): the time, so a chat in another folder can tell this loop stopped (a turn takes 60 s at
+# most, so a beat older than 120 s means it did). Bash 5 starts no program for it. Once before the room is
+# asked this folder's role, which can take 10 s, so a chat that is starting never looks stopped; then each
+# turn. A reporter or a refused folder that wrote one is left out by its role or its lost yes.
+heartbeat() { echo "${EPOCHSECONDS:-$(date +%s)}" 2>/dev/null > "$FOLDER/beat"; }
+heartbeat
+
 case "$(role_of)" in
   reporter) reporter ;;
   refused) lost ;;
@@ -1575,6 +1594,7 @@ after=$(cat "$after_file" 2>/dev/null)
 log "start ($event, pid $$) for $dir"
 down=''
 while true; do
+  heartbeat
   qs=''
   [ -n "$after" ] && qs="?after=$after"
   code=$(curl -sS -m 40 -A "aisle-plugin/${VER:-0.0.0}" -o "$F" -w '%{http_code}' -H "@$HEADER_FILE" "$U$qs" 2>/dev/null)

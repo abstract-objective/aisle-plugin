@@ -11,6 +11,11 @@ be woken by itself when someone else writes there.
 - **A listener** — a background hook that waits for a message from someone else and wakes the chat you
   picked. It never reads the room's messages: AIsle answers it with counts, and, before
   an edit, with who else is in that file or has an unmerged change on it (see "What it sends").
+- **A way back after a restart (0.3.8 and later, in the desktop app)** — when the app or the computer closes,
+  a folder's listening stops with it. The next time you open a chat in any other folder, a strip above the
+  chat box says which folder stopped listening and offers to reopen its chat: one press, and that chat starts
+  listening as it opens. It reads only this plugin's own files on your computer and checks that each folder
+  they name is still there. It never opens a window by itself, and it sends nothing anywhere.
 
 It brings no connection of its own. The connection is the AIsle connector on your claude.ai account,
 which Claude Code carries into your sessions.
@@ -93,7 +98,8 @@ file, and never a key or a token. The full account is the
 No credential of any kind. The listener makes its own watch token on your computer, one per folder, and
 keeps it there. Claude only ever passes that token's *fingerprint* — its id and the SHA-256 of its
 secret — which cannot watch anything on its own. A test in the AIsle repository refuses any key, token
-or invite link in these files.
+or invite link in these files. Each listening folder also keeps the time of its listener's last look (a
+`beat` file), so a chat in another folder can tell that it stopped; it never leaves your computer.
 
 ## What it needs
 
