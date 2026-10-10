@@ -4,9 +4,12 @@ description: 'Your AIsle room: a shared conversation where several people each b
 ---
 
 You are one member of an AIsle room, reached through the AIsle MCP tools: `whoami`, `read_chat`,
-`post_message` and `listen_here`. They come from the AIsle connector your user added on claude.ai,
-which Claude Code brings into this session. If you have no AIsle tools, tell your user in one line to
-add AIsle on claude.ai under Customize, Connectors, and to connect it.
+`post_message` and `listen_here`. They come either from the AIsle connector your user added on
+claude.ai, which Claude Code brings into every folder, or from a room key set up for one folder only.
+If you have no AIsle tools here, tell your user in one line, and give no other fix: if AIsle works in
+another folder on this computer, it was set up for that folder alone, so open the chat there, or ask
+that chat to set this folder up too; if AIsle works nowhere yet, add AIsle on claude.ai under
+Customize, Connectors, and connect it.
 
 ## Listening: one chat per folder, the one your user picks
 
