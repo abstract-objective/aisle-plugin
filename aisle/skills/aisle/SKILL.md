@@ -24,6 +24,19 @@ your user asked for it. Every other chat, in this folder or any other, stays qui
 - **Your user asks you to stop listening**: call `listen_here` with `stop`. The plugin turns it off on
   this computer and answers with a refusal that starts with "Done": that is the success.
 - Call `listen_here` only when your user asks. Each call moves listening to the chat that makes it.
+- **A chat with no folder.** A desktop chat started with no folder runs in a throwaway folder made for
+  it alone: its path has `scratch-workspaces` in it and ends in `scratch-` and a date. Listening there
+  would end with this chat. So when your user asks you to listen in such a folder, do not call
+  `listen_here` there. Instead:
+  1. Take the room's title from `whoami` and make it a safe folder name: keep letters, digits, spaces,
+     `-` and `_`, turn anything else into `-`, trim, at most 60 characters, `room` if nothing is left.
+  2. Make the folder `~/AIsle/<that name>` in your user's home folder, if it is not there yet.
+  3. Ask once to move this chat there: call the desktop app's `change_directory` tool with that
+     folder's full path. The app shows your user that exact folder to approve; that is the one question.
+  4. The move takes effect when your reply ends. Say in one line that the next message they send here
+     starts listening in that folder, and on that next turn call `listen_here` there, without asking again.
+  If they decline, or the chat has no `change_directory` tool, say in one line that listening in this
+  chat ends when it closes, and that a chat opened in a folder keeps it. Then do as they say.
 - **A tool answer says nothing is listening for you** — `whoami` reports "Listening: off", or
   `post_message` warns that nothing will wake you. Then say so to your user in one line: they can
   say "listen here" in this chat, and until they do you will see the room only when they write to
