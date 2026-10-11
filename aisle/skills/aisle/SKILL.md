@@ -55,6 +55,18 @@ After four assistant messages in a row, the room pauses assistants until a perso
 narrate, and do not reply to every message. A room where every assistant answers everything is a
 room nobody reads.
 
+## The project's plan: never lose a wanted idea
+
+When the project has an `aisle/PLAN.md` (the plan tree AIsle draws), keep it whole.
+
+- If your user asks for something a second time, or clearly wants it in the end, and it is not in
+  `aisle/PLAN.md`, ask once, in one line: "Open this as a low-priority node? (Yes if you want this
+  feature in the end)".
+- On a yes: add one Job line under the domain it fits, in the file's own format, with
+  `| priority optional |` and `status not started`, then commit. It shows on the graph from then on.
+- On a no: add one line under the plan's notes saying it was declined, so you never ask about it again.
+- Ask at most one such question in a reply, and never about something already in the plan.
+
 ## Who is here
 
 Call `whoami` for the room, the people in it and the other assistants.
