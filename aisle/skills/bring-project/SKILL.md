@@ -6,19 +6,31 @@ description: 'Bring an existing project into AIsle: read the project in this fol
 Your user wants the project in this folder to start in AIsle from what it already is, not from an empty
 plan (D75). You write two files in the project, `aisle/GOAL.md` and `aisle/PLAN.md`, show them to your
 user, and post the plan to the project's room only when they say yes. Only the plan leaves this
-computer: never code, never file contents, never anything that looks like a key, token or password.
+computer: never code, never file contents, never anything that looks like a key, token or password,
+and no names of customers, patients or outside contacts (the team's own names only).
 
 ## 1. Read the project, and only what you need
 
 - The top-level folders and the files that say what the project is: `README*`, `CONTRIBUTING*`,
   `docs/` (headings), the package or build file (`package.json`, `pyproject.toml`, `*.csproj`,
   `go.mod`, `Cargo.toml` or similar).
-- What happened recently: `git log --since="90 days ago" --pretty="%ad %s" --date=short` (the newest
-  200 lines at most), and `git branch -a` for work under way.
+- **The plan the project already keeps, if it has one: read it in full.** A roadmap, a goal or mission
+  file, a board or task list (names like `ROADMAP`, `PLAN`, `GOAL`, `MISSION`, `TODO`, `BOARD`, at
+  the top or in `docs/`). It is the best source: its items become jobs, and its own done marks count
+  as evidence (say so in Done when: "done on the project's board, docs/ROADMAP.md").
+- What happened recently:
+  - `git log --since="90 days ago" --pretty="%ad %s" --date=short | head -200`. If those 200 lines
+    cover only a few days, read the merges and releases instead: `git log --merges --since="90 days
+    ago" --pretty="%ad %s" --date=short | head -200` and `git tag --sort=-creatordate | head -20`.
+  - Work under way: `git branch -r --no-merged --sort=-committerdate
+    --format="%(committerdate:short) %(refname:short)" | head -30`. A branch with a commit in the last
+    30 days is in progress; older ones are not.
 - What is open: `TODO`/`FIXME` counts per folder (counts, not the lines), and the open issues if `gh`
   works here (`gh issue list --limit 50`). If `gh` is not signed in, skip it and say so; do not ask
   your user to sign in for this.
-- If `aisle/PLAN.md` already exists, stop and ask your user whether to replace it or add to it.
+- If an AIsle plan already exists, here or on another branch (`git branch -a --list "*aisle*"`, then
+  `git ls-tree -r --name-only <branch> aisle/PLAN.md`), stop and ask your user whether to use it,
+  replace it or add to it. Never write a second, competing plan.
 
 ## 2. Ask one thing if you must
 
@@ -44,10 +56,13 @@ Owner: <your user's name>
 - Statuses are exactly: done, in progress, not started, blocked.
 - **Mark a job done only with evidence you saw:** a merged commit, a release, a page that exists. Put
   the evidence in its Done when ("merged 2026-09-03, 4f2a1c0"). When you are not sure, it is not done.
-- In progress: work on a branch that is not merged, or an issue someone is assigned to.
-- Blocked means a step only a person can do (an account, a payment, a decision). Name it in Blocks:
-  "Blocks: wall, a decision on the pricing (who: Dana)".
-- Job ids: a letter and a number, each used once. Blocks lists job ids, or "none".
+- In progress: work on a branch that is not merged, an issue someone is assigned to, or work that is
+  partly merged with more left (say what is left in Done when).
+- **Blocks means "blocked by": what this job waits for,** never what it holds up. List the job ids it
+  waits for, separated by commas, or "none". A job that waits for a step only a person can do (an
+  account, a payment, a decision) has status blocked and names the step after a semicolon:
+  "Blocks: b1; wall: a decision on the pricing (who: Dana)".
+- Job ids: a letter and a number, each used once. Every id in Blocks must be a job in the plan.
 - Keep it the size of the project: about 10 to 60 jobs. Group the past into a few done jobs per area;
   the open work is where the detail belongs.
 - No line in the plan may be just `Plan:`, `Status:` or `Briefs:` on its own.
