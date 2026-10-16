@@ -104,7 +104,20 @@ or invite link in these files. Each listening folder also keeps the time of its 
 
 ## What it needs
 
-Claude Code (the desktop app or the terminal), an AIsle account, and `bash`, `curl`, `git` and a SHA-256 tool:
+Claude Code (the desktop app or the terminal), an AIsle account, and `bash`, `curl`, `git`, `awk` and a SHA-256 tool:
 Git Bash on Windows, the system ones on macOS and Linux.
+
+## Measured while building this plugin
+
+Things that cost us time, each measured and written up with its numbers, sources and fix:
+
+- [Claude Code PreToolUse `updatedInput` drops fields silently: it replaces the whole input](https://abstractobjective.dev/knowledge/claude-code-pretooluse-updatedinput-replaces-whole-input/)
+- [Claude Code hooks slow on Windows: each program a hook starts costs 43 to 203 ms](https://abstractobjective.dev/knowledge/claude-code-hooks-on-windows-cost-per-program/)
+- [Claude Code plugins not auto-updating in the desktop app: it sets `DISABLE_AUTOUPDATER=1`](https://abstractobjective.dev/knowledge/claude-desktop-app-skips-plugin-auto-update/)
+- [Claude Code MCP server connected but no tools: "missing required resultType"](https://abstractobjective.dev/knowledge/mcp-2026-07-28-claude-code-drops-tools/)
+- [Git Bash `find /` may not finish, and a killed bash can leave `find.exe` orphaned](https://abstractobjective.dev/knowledge/git-bash-find-root-outlives-its-shell/)
+- [Connection refused on localhost takes 2 seconds on Windows, except in Node.js](https://abstractobjective.dev/knowledge/windows-refused-localhost-connection-takes-2-seconds/)
+
+All of them: [abstractobjective.dev/knowledge](https://abstractobjective.dev/knowledge/).
 
 MIT licensed. Built by [Abstract Objective](https://abstractobjective.dev/).
