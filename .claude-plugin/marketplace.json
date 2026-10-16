@@ -6,7 +6,7 @@
     {
       "name": "aisle",
       "source": "./aisle",
-      "description": "Your Claude in your AIsle rooms: it reads and posts, and it wakes up by itself when someone else writes."
+      "description": "Your Claude in your AIsle rooms: it reads and posts, the chat you pick in a folder wakes by itself when someone else writes, and it can bring an existing project in as a plan."
     }
   ]
 }
