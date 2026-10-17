@@ -1447,7 +1447,7 @@ if [ "$event" = "PostToolUse" ]; then
       mkdir -p "$FOLDER" || exit 0
       date -u +%Y-%m-%dT%H:%M:%SZ > "$asked"
       log "asked once whether to listen for $dir"
-      printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s"}}' "AIsle plugin ✓ (version ${VER:-unknown}) on this computer. Nothing in this folder wakes up when somebody writes in the room, and it has never been asked. Ask your user now, in one short line and nothing else: shall this chat listen for the room, yes or no? A yes also tells the room which files this clone's worktrees have unmerged changes on and the commits that made them, never what is in them, so parallel sessions can be warned. If yes, call listen_here. If no, call listen_here with the fingerprint stop, and say nothing more about it: this is asked once per folder, ever."
+      printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s"}}' "AIsle plugin ✓ (version ${VER:-unknown}) on this computer. Nothing in this folder wakes up when somebody writes in the room, and it has never been asked. Ask your user now, one question and nothing else, in your app's question box (in Claude Code, AskUserQuestion; plain text only if there is none): shall this chat listen for the room, yes or no? Options: 'Yes, listen here (Recommended)', because a chat that listens is woken when someone writes, and 'No'. A yes also tells the room which files this clone's worktrees have unmerged changes on and the commits that made them, never what is in them, so parallel sessions can be warned. If yes, call listen_here. If no, call listen_here with the fingerprint stop, and say nothing more about it: this is asked once per folder, ever."
       exit 0
       ;;
   esac
