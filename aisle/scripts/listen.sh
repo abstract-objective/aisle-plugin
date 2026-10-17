@@ -1514,9 +1514,28 @@ fi
 # (D38). No question, nothing to type. The chat that had it notices at its next turn through the loop
 # and stops without a word. Stop, unlike SessionStart, never takes anything over: it runs after every
 # reply in every chat, and a room would ping-pong between two open chats forever.
+# A chat in one of this folder's Claude Code worktrees is not that chat (0.3.20). The desktop app starts
+# such a session with CLAUDE_PROJECT_DIR set to the main folder, so without this a worker another session
+# started in a worktree took listening from the chat its person was in, and the room woke a busy worker
+# (2026-10-17, Test room #74). Its real folder is the hook's cwd; both are compared spelled as letters,
+# digits and dots, by bash alone (3.2 on a Mac: no case folding by expansion, so nocasematch).
+in_worktree() {
+  field cwd
+  local c="$FV" d="$dir" r=1
+  c="${c//[^A-Za-z0-9.]/_}"; d="${d//[^A-Za-z0-9.]/_}"
+  while [[ $c == *__* ]]; do c="${c//__/_}"; done
+  while [[ $d == *__* ]]; do d="${d//__/_}"; done
+  shopt -s nocasematch
+  [[ $c == "${d%_}"_.claude_worktrees_* ]] && r=0
+  shopt -u nocasematch
+  return $r
+}
 helper=$(cat "$FOLDER/helper" 2>/dev/null)
 if [ "$helper" != "$sid" ]; then
-  if [ "$event" = "SessionStart" ]; then
+  if [ "$event" = "SessionStart" ] && in_worktree; then
+    log "a chat in a worktree of $dir started; listening stays with the chat that has it"
+    exit 0
+  elif [ "$event" = "SessionStart" ]; then
     echo "$sid" > "$FOLDER/helper"
     rm -f "$DATA/after-$sid" "$DATA/said-lost-$sid"
     log "took listening over for $dir (new chat)"

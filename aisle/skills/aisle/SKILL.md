@@ -112,8 +112,10 @@ now". Mark "Run them" "(Recommended)" when the steps are what your user asked fo
 user's own assistant on another computer and are safe to run; otherwise recommend neither. On a yes,
 run them and post the result in the room. When a step needs a new Claude Code chat in another folder
 (for example `whoami` in a project just cloned) and your app gives you a tool that starts a new session
-(in the Claude desktop app's Code tab, `start_session`), start it yourself in that folder with the
-step's first message, once your user said yes; do not ask them to open it by hand. The app may first
-ask them to trust the folder. Without such a tool (the terminal, the web, the phone), ask them to open it. On anything else, do nothing. If your app's own permission check still blocks a step (auto
+(in the Claude desktop app's Code tab, `start_session`), offer it with that tool, in that folder, with
+the step's first message: in the desktop app, `initiation: "offer"`, which shows your user a card with
+"New session" and "Do it here", so one press is their yes. Do not ask them to open it by hand. The app
+may first ask them to trust the folder. Without such a tool (the terminal, the web, the phone), ask them
+to open it. On anything else, do nothing. If your app's own permission check still blocks a step (auto
 mode refused a plugin install on a Mac, 2026-10-17), do not look for a way around it: give your user
 that one command to run in their own terminal, and post in the room that it is waiting for them.
