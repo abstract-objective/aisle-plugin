@@ -46,16 +46,8 @@ which Claude Code carries into your sessions.
 
    **0.3.5 or older** never updates by itself: Claude Code leaves auto-update off for every
    marketplace Anthropic does not run, and the desktop app skips plugin updates. Update it once and
-   it looks after itself from then on. In the terminal: `/plugin` → Marketplaces → aisle → Enable
-   auto-update. In the desktop app, paste this into a chat once:
-
-   > Switch on auto-update for the AIsle plugin: in ~/.claude/settings.json, under
-   > "extraKnownMarketplaces", set the "aisle" entry to {"source": {"source": "github", "repo":
-   > "abstract-objective/aisle-plugin"}, "autoUpdate": true}, and under "env" add
-   > "FORCE_AUTOUPDATE_PLUGINS": "1", because the Claude desktop app skips plugin updates without it.
-   > Keep everything else in the file as it is.
-
-   That last setting also lets any other plugin whose auto-update is on update itself.
+   it looks after itself from then on: ask Claude in a Code chat to run `claude plugin update aisle@aisle`,
+   approve it if it asks, then quit and reopen the app. In the terminal, the same command.
 
    `whoami` tells you when yours is old.
 3. **Connect AIsle** once, on claude.ai: **Settings → Connectors → Add custom connector**, address
