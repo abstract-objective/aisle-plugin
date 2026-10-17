@@ -1534,6 +1534,33 @@ in_worktree() {
 # chat, which the person did not just open. An older chat's compaction took listening from the chat Ofir
 # had picked with listen_here (2026-10-17 04:12 UTC, listener log).
 compacted() { field source; [ "$FV" = compact ]; }
+# Nor is a scheduled task's run (0.3.23): the desktop app starts each run as a new session in the task's
+# folder, its first message the task's prompt ("<scheduled-task name=..."), and nobody is in it. The daily
+# check took listening from the chat Ofir had picked, every morning (2026-10-17 06:11 UTC, listener log).
+# The prompt reaches the transcript within a second of this hook, which runs in the background, so it
+# waits up to 5 seconds for it; a chat whose first message is a person's takes listening over as before.
+# The transcript's path comes with each backslash doubled, as JSON writes it; see the edit hook's note.
+scheduled() {
+  field source; [ "$FV" = resume ] && return 1
+  field transcript_path
+  local tp="$FV" b='' i line n
+  [ -n "$tp" ] || return 1
+  [ -s "$DATA/backslash" ] || awk 'BEGIN { printf "%c", 92 }' > "$DATA/backslash"
+  IFS= read -r -d '' b < "$DATA/backslash"
+  tp="${tp//"$b$b"/"/"}"
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if [ -s "$tp" ]; then
+      n=0
+      while [ $n -lt 8 ] && IFS= read -r line; do
+        n=$((n + 1))
+        [[ $line == *'<scheduled-task '* ]] && return 0
+        [[ $line == *"${q}type${q}:${q}user${q}"* ]] && return 1
+      done < "$tp"
+    fi
+    sleep 0.5
+  done
+  return 1
+}
 helper=$(cat "$FOLDER/helper" 2>/dev/null)
 if [ "$helper" != "$sid" ]; then
   if [ "$event" = "SessionStart" ] && in_worktree; then
@@ -1541,6 +1568,9 @@ if [ "$helper" != "$sid" ]; then
     exit 0
   elif [ "$event" = "SessionStart" ] && compacted; then
     log "$sid compacted; listening stays with the chat that has it"
+    exit 0
+  elif [ "$event" = "SessionStart" ] && scheduled; then
+    log "$sid is a scheduled task's run; listening stays with the chat that has it"
     exit 0
   elif [ "$event" = "SessionStart" ]; then
     echo "$sid" > "$FOLDER/helper"
