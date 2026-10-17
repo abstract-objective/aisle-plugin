@@ -31,6 +31,9 @@ which Claude Code carries into your sessions.
    ```
 
    It opens the Claude desktop app with this marketplace filled in: press **Sync**, then **Install**.
+   **On a Mac (2026-10-17) the link added nothing to Claude Code**: ask Claude in a Code chat to run
+   `claude plugin marketplace add abstract-objective/aisle-plugin` then `claude plugin install aisle@aisle`,
+   approve them if it asks (auto mode stops them), then quit and reopen the app and open a new chat.
    Anthropic does not document the link, so if it does nothing, add the marketplace by hand:
    **Customize → Plugins → Add → Add marketplace**, and give it `abstract-objective/aisle-plugin`.
    In the terminal: `claude plugin marketplace add abstract-objective/aisle-plugin`.
