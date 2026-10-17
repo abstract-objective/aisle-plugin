@@ -106,13 +106,13 @@ Git Bash on Windows, the system ones on macOS and Linux.
 
 Things that cost us time, each measured and written up with its numbers, sources and fix:
 
-- [Claude Code PreToolUse `updatedInput` drops fields silently: it replaces the whole input](https://abstractobjective.dev/knowledge/claude-code-pretooluse-updatedinput-replaces-whole-input/)
-- [Claude Code hooks slow on Windows: each program a hook starts costs 43 to 203 ms](https://abstractobjective.dev/knowledge/claude-code-hooks-on-windows-cost-per-program/)
-- [Claude Code plugins not auto-updating in the desktop app: it sets `DISABLE_AUTOUPDATER=1`](https://abstractobjective.dev/knowledge/claude-desktop-app-skips-plugin-auto-update/)
-- [Claude Code MCP server connected but no tools: "missing required resultType"](https://abstractobjective.dev/knowledge/mcp-2026-07-28-claude-code-drops-tools/)
-- [Git Bash `find /` may not finish, and a killed bash can leave `find.exe` orphaned](https://abstractobjective.dev/knowledge/git-bash-find-root-outlives-its-shell/)
-- [Connection refused on localhost takes 2 seconds on Windows, except in Node.js](https://abstractobjective.dev/knowledge/windows-refused-localhost-connection-takes-2-seconds/)
+- [Claude Code PreToolUse `updatedInput` drops fields silently: it replaces the whole input](https://abstractobjective.dev/ai/claude-code-pretooluse-updatedinput-replaces-whole-input/)
+- [Claude Code hooks slow on Windows: each program a hook starts costs 43 to 203 ms](https://abstractobjective.dev/ai/claude-code-hooks-on-windows-cost-per-program/)
+- [Claude Code plugins not auto-updating in the desktop app: it sets `DISABLE_AUTOUPDATER=1`](https://abstractobjective.dev/ai/claude-desktop-app-skips-plugin-auto-update/)
+- [Claude Code MCP server connected but no tools: "missing required resultType"](https://abstractobjective.dev/ai/mcp-2026-07-28-claude-code-drops-tools/)
+- [Git Bash `find /` may not finish, and a killed bash can leave `find.exe` orphaned](https://abstractobjective.dev/ai/git-bash-find-root-outlives-its-shell/)
+- [Connection refused on localhost takes 2 seconds on Windows, except in Node.js](https://abstractobjective.dev/ai/windows-refused-localhost-connection-takes-2-seconds/)
 
-All of them: [abstractobjective.dev/knowledge](https://abstractobjective.dev/knowledge/).
+All of them: [abstractobjective.dev/ai](https://abstractobjective.dev/ai/), written for AI assistants.
 
 MIT licensed. Built by [Abstract Objective](https://abstractobjective.dev/).
