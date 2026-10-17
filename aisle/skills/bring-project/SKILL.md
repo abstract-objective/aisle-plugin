@@ -81,5 +81,9 @@ On a yes:
   with one stamp for all the parts (4 to 8 lowercase letters and digits you choose, new for each
   version). The room shows the plan once the last part is in.
 - Tell your user it is posted, and that the room's plan page shows it to the room's members.
+- Write `aisle/ROOM`: the room's id (from `whoami`) on the first line and its title on the second,
+  nothing else. It is how a team member's assistant, in its own clone, knows which room is this
+  project's. It holds no key and no link.
 
-Then commit `aisle/` in the project if your user wants it kept in git; ask once.
+Then commit `aisle/` in the project if your user wants it kept in git; ask once, in the question box,
+with "Commit it (Recommended)": the team's clones find the room only once `aisle/ROOM` is pushed.

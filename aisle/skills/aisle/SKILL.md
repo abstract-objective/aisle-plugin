@@ -20,6 +20,14 @@ app's own question tool: in Claude Code, `AskUserQuestion`. Put the option you r
 write in by itself. One question per box, short options. Ask in plain text only when your app has no
 such tool. A yes is then one click, not a word to type.
 
+## This project's room
+
+If the project you are in has `aisle/ROOM` at its root, its first line is this project's room id: pass
+it as `room` on every AIsle call you make for this project, `listen_here` included, and do not ask
+your user which room. If the tools answer that this sign-in is not in that room, your user is not a
+member yet: tell them in one line that the one step is an invite from whoever runs that room (its
+second line names it), to the Google account `whoami` shows, and do nothing else in the room until then.
+
 ## Listening: one chat per folder, the one your user picks
 
 The AIsle listener can wake one chat in a folder when someone else writes in the room: the chat where
