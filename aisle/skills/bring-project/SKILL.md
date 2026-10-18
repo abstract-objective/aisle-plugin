@@ -70,8 +70,10 @@ Owner: <your user's name>
 ## 4. Show it, then post it only on a yes
 
 Tell your user, in a few lines: the goal, the number of domains and jobs, how many you marked done
-and on what evidence, and the three biggest open jobs. Ask: "Post this plan to the AIsle room?" If
-they want changes, change the files and show them again.
+and on what evidence, and the three biggest open jobs. Count the way the plan page does: the jobs and
+the percent done are over the high and normal jobs only, and low and optional jobs are said apart
+("19 jobs, 21% done, + 1 optional"). Ask: "Post this plan to the AIsle room?" If they want changes,
+change the files and show them again.
 
 On a yes:
 - Find the room with `whoami`. If the sign-in reaches several rooms, ask which one is this project's.
