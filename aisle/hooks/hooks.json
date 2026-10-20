@@ -36,7 +36,8 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/listen.sh\"",
-            "timeout": 15
+            "timeout": 15,
+            "onFailure": "continue"
           }
         ]
       },
@@ -46,7 +47,8 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/listen.sh\"",
-            "timeout": 5
+            "timeout": 5,
+            "onFailure": "continue"
           }
         ]
       }

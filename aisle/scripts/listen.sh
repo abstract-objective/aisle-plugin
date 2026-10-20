@@ -42,7 +42,7 @@
 U="${AISLE_WATCH_URL:-https://aisle.abstractobjective.dev/watch}"
 DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.aisle-plugin}"
 LOG="$DATA/listener.log"
-SELF="$0"
+SELF="${BASH_SOURCE[0]:-$0}"
 # A tab and a newline without writing a backslash: bash starts with IFS set to exactly space, tab,
 # newline, whatever the environment says.
 TAB="${IFS:1:1}"
@@ -57,13 +57,32 @@ if [ "$1" = "--worker" ]; then
   input=''
 else
   # The hook's input is JSON on stdin. Read it without ever blocking on a stdin that stays open.
-  IFS= read -r -t 3 -d '' input
+  # A copy handed the hook by an older one (D84) runs in its process, with the input it read.
+  [ -n "$AISLE_HANDED" ] || IFS= read -r -t 3 -d '' input
 fi
 
 # The folders that said yes to a room, in "$DATA/yes" as |key|key|, where a key is the folder's name in
 # letters and digits only, compared in any case, so bash can make it without starting a program. The
 # worktrees of a clone that said yes are in it too (D46).
 yes_key() { key="${1//[!A-Za-z0-9]/}"; }
+
+# A whole file into SL, without the newlines it ends with, by bash alone. Git Bash's read takes one byte
+# per system call, about 4.7 us a byte (measured 2026-10-20): the worker read its worktrees' git status
+# and notes that way, 1 MB a pass on Ofir's PC, and held about 10% of a core all day, 87% of it in the
+# kernel. $(<file) reads in blocks, and bash 5.3 starts no process for it (0.3 ms, against 15 ms for one
+# that forks); an older bash would fork for it, so it reads as before.
+if [ "${BASH_VERSINFO[0]:-0}" -gt 5 ] || { [ "${BASH_VERSINFO[0]:-0}" -eq 5 ] && [ "${BASH_VERSINFO[1]:-0}" -ge 3 ]; }; then
+  slurp() { SL=''; [ -f "$1" ] && SL=$(<"$1"); return 0; }
+else
+  slurp() {
+    SL=''
+    [ -f "$1" ] && IFS= read -r -d '' SL < "$1"
+    while [ "${SL%"$NL"}" != "$SL" ]; do SL="${SL%"$NL"}"; done
+    return 0
+  }
+fi
+# The lines of SL into the array named $1, empty ones left out, by bash alone.
+lines_of() { local IFS="$NL"; set -f; eval "$1"'=($SL)'; set +f; }
 
 # The edit hook runs before every Edit and Write in every project on this computer, because the plugin
 # is installed for the person and not per project. So in a folder that never said yes it must cost no
@@ -78,14 +97,26 @@ if [[ $input =~ $re ]] && [ "${BASH_REMATCH[1]}" = PreToolUse ]; then
     Edit|Write|MultiEdit|NotebookEdit)
       d="$CLAUDE_PROJECT_DIR"
       re='"cwd" *: *"([^"]*)"'
-      [ -z "$d" ] && [[ $input =~ $re ]] && d="${BASH_REMATCH[1]}"
+      wd=''
+      [[ $input =~ $re ]] && wd="${BASH_REMATCH[1]}"
+      [ -z "$d" ] && d="$wd"
       # No list yet (the first edit after an update): the long way below makes it.
       if [ -f "$DATA/yes" ]; then
-        IFS= read -r -d '' list < "$DATA/yes"
+        slurp "$DATA/yes"
+        list="$SL"
         yes_key "$d"
         [ -n "$key" ] || exit 0
         shopt -s nocasematch
-        case "$list" in *"|$key|"*) ;; *) exit 0 ;; esac
+        case "$list" in
+          *"|$key|"*) ;;
+          *)
+            # Or the worktree the chat is in, which the desktop app does not name in CLAUDE_PROJECT_DIR
+            # (see in_worktree): one of a clone that said yes, whose main folder did not (0.3.25).
+            yes_key "$wd"
+            [ -n "$key" ] || exit 0
+            case "$list" in *"|$key|"*) ;; *) exit 0 ;; esac
+            ;;
+        esac
         shopt -u nocasematch
       fi
       ;;
@@ -98,8 +129,8 @@ field() { FV=''; local re="$q$1$q *: *$q([^$q]*)$q"; [[ $input =~ $re ]] && FV="
 # This plugin's own version, told to the room with every poll so an old copy gets noticed (D43).
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(dirname "$0")/..}"
 VER=''
-manifest=''
-[ -f "$ROOT/.claude-plugin/plugin.json" ] && IFS= read -r -d '' manifest < "$ROOT/.claude-plugin/plugin.json"
+slurp "$ROOT/.claude-plugin/plugin.json"
+manifest="$SL"
 re='"version" *: *"([^"]*)"'
 [[ $manifest =~ $re ]] && VER="${BASH_REMATCH[1]}"
 
@@ -117,6 +148,73 @@ log() {
   if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 200000 ]; then tail -n 300 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"; fi
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $sid $*" >> "$LOG"
 }
+
+# An open chat runs the newest installed copy of this script, not the copy it started with (D84). Claude
+# Code keeps each version of the plugin in a folder of its own, named by the version, and a chat runs
+# the copy that was newest when it opened for as long as it stays open, which for some chats is days. So
+# a fix to listening reached only the chats opened after it: 6 minutes after 0.3.22 went live, an older
+# chat's compaction, on an older copy, took listening from the chat Ofir had picked (2026-10-17 04:46
+# UTC, listener log). So a copy hands the hook to the newest copy in the folder beside its own that has
+# this script and is not set aside (.orphaned_at), or, when its own copy is the one set aside (a
+# rollback), to the copy installed now, even a lower one.
+# The newer copy runs in this same process, with the input already read: Claude Code ends a hook by
+# killing its process alone, and a second process (exec is one in Git Bash) outlived both the hook's
+# timeout and its chat (measured with Claude Code 2.1.299, 2026-10-17). Sharing the process is a contract
+# every later version keeps: it runs under an older chat's hooks.json (its events, timeouts, no
+# arguments), and with AISLE_HANDED set it reads no input and hands over to nobody.
+# Each copy is checked once per version on this computer before it is handed anything: it parses, and it
+# knows AISLE_HANDED, since a copy that does not would wait 3 seconds on an input already read. One that
+# fails is passed over for the next one down, and checked again only when its script changes, so a broken
+# release costs nothing per hook and a half-written copy is not kept out for good. After that bash alone
+# looks, one folder listing and a test or two, so an edit pays no program for it.
+# Not the presence worker: a newer copy starts its own, and the old one ends by itself.
+HANDTO=''
+ready() {
+  local f="$1/scripts/listen.sh" v="${1##*/}"
+  [ -s "$f" ] || return 1
+  [ -f "$DATA/handover-ok-$v" ] && return 0
+  [ -f "$DATA/handover-no-$v" ] && [ ! "$f" -nt "$DATA/handover-no-$v" ] && return 1
+  if bash -n "$f" 2>/dev/null && grep -q AISLE_HANDED "$f"; then : > "$DATA/handover-ok-$v"; return 0; fi
+  : > "$DATA/handover-no-$v"
+  [ -f "$DATA/handover-$sid-$v" ] || { : > "$DATA/handover-$sid-$v"; log "passes over the copy of $v: it does not parse, or takes no hand-over (D84)"; }
+  return 1
+}
+handover() {
+  [ -z "$WORKER" ] && [ -z "$AISLE_HANDED" ] && [ -n "$CLAUDE_PLUGIN_ROOT" ] || return 0
+  local re='^([0-9]+)[.]([0-9]+)[.]([0-9]+)$' r="${CLAUDE_PLUGIN_ROOT%/}" name parent b='' v n top=0 best=''
+  name="${r##*[!0-9.]}"
+  [[ $name =~ $re ]] && [[ $VER =~ $re ]] || return 0
+  [ -e "$r/.orphaned_at" ] || top=$((10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]}))
+  parent="${r%"$name"}"
+  # Claude Code spells the folder with forward slashes on Windows too (2.1.299); another spelling has
+  # backslashes, which bash's own pattern matching cannot walk, so they become slashes first.
+  case "$parent" in
+    */) ;;
+    *)
+      [ -s "$DATA/backslash" ] || awk 'BEGIN { printf "%c", 92 }' > "$DATA/backslash"
+      IFS= read -r -d '' b < "$DATA/backslash"
+      parent="${parent//"$b"//}"
+      ;;
+  esac
+  for v in "$parent"*; do
+    [[ ${v##*/} =~ $re ]] || continue
+    n=$((10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]}))
+    [ "$n" -gt "$top" ] && [ "$v" != "$parent$name" ] && [ ! -e "$v/.orphaned_at" ] && ready "$v" || continue
+    top=$n
+    best="$v"
+  done
+  [ -n "$best" ] || return 0
+  v="${best##*/}"
+  [ -f "$DATA/handover-$sid-$v" ] || { : > "$DATA/handover-$sid-$v"; log "runs the listener of $v, the copy installed now, in place of its own $VER (D84)"; }
+  HANDTO="$best"
+}
+handover
+if [ -n "$HANDTO" ]; then
+  AISLE_HANDED="$VER"
+  CLAUDE_PLUGIN_ROOT="$HANDTO"
+  source "$HANDTO/scripts/listen.sh" "$@"
+  exit $?
+fi
 
 # Say something to Claude, but only the first time this session.
 say_once() {
@@ -139,13 +237,14 @@ put() { printf '%s' "$2" > "$1.$$" && mv -f "$1.$$" "$1"; }
 keep() { printf '%s' "$2" > "$1"; }
 # A note kept only when it changed, so a pass that changes nothing writes nothing.
 note() { local v=''; [ -f "$1" ] && IFS= read -r v < "$1"; [ "$v" = "$2" ] || put "$1" "$2"; }
-# Do two files hold the same? By bash alone, for the small files the worker keeps.
+# Do two files hold the same, but for the newlines they end with? By bash alone.
 same_file() {
-  local a='' b=''
+  local a
   { [ -f "$1" ] && [ -f "$2" ]; } || return 1
-  IFS= read -r -d '' a < "$1"
-  IFS= read -r -d '' b < "$2"
-  [ "$a" = "$b" ]
+  slurp "$1"
+  a="$SL"
+  slurp "$2"
+  [ "$a" = "$SL" ]
 }
 
 # One spelling of a folder however it was written (C: or /c/, either slash, any case), and the place
@@ -156,13 +255,15 @@ same_file() {
 # never written down (0.3.7 before the second fix check wrote every folder a chat started in).
 spell() { printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9._-' '_' | tr -s '_' | sed 's/^_*//;s/_*$//'; }
 folder_of() {
-  local p n
+  local l n lines
   FO=''
-  if [ -f "$DATA/spellings" ]; then
-    while IFS="$TAB" read -r p n; do
-      [ "$p" = "$1" ] && { FO="$DATA/folders/$n"; return 0; }
-    done < "$DATA/spellings"
-  fi
+  slurp "$DATA/spellings"
+  case "$NL$SL" in
+    *"$NL$1$TAB"*)
+      lines_of lines
+      for l in "${lines[@]}"; do [ "${l%%"$TAB"*}" = "$1" ] && { FO="$DATA/folders/${l#*"$TAB"}"; return 0; }; done
+      ;;
+  esac
   if [ -n "$2" ]; then n=$(printf '%s' "$2" | sha | cut -c1-16); else n=$(spell "$1" | sha | cut -c1-16); fi
   FO="$DATA/folders/$n"
   { [ -n "$2" ] || [ -d "$FO" ]; } || return 0
@@ -250,7 +351,7 @@ header_of() { [ -s "$1/header" ] || put "$1/header" "Authorization: Bearer $(cat
 # listener and by each clone's worker. A folder missing from it only goes unheard until its next chat
 # starts or replies.
 yes_index() {
-  local list='|' f p
+  local list='|' f p lines
   for f in "$DATA"/folders/*/answered; do
     [ -f "$f" ] || continue
     [ -f "${f%/answered}/stopped" ] && continue
@@ -262,10 +363,12 @@ yes_index() {
   done
   for f in "$DATA"/clones/*/covered; do
     { [ -f "$f" ] && [ -f "${f%/covered}/yes" ]; } || continue
-    while IFS= read -r p; do
+    slurp "$f"
+    lines_of lines
+    for p in "${lines[@]}"; do
       yes_key "$p"
       [ -n "$key" ] && list="$list$key|"
-    done < "$f"
+    done
   done
   put "$DATA/yes" "$list"
 }
@@ -273,8 +376,9 @@ yes_add() {
   [ -f "$DATA/yes" ] || yes_index
   yes_key "$1"
   [ -n "$key" ] || return 0
-  local list=''
-  IFS= read -r -d '' list < "$DATA/yes"
+  local list
+  slurp "$DATA/yes"
+  list="$SL"
   [ -n "$list" ] || list='|'
   case "$list" in *"|$key|"*) return 0 ;; esac
   put "$DATA/yes" "$list$key|"
@@ -397,7 +501,8 @@ clone_unyes() {
   [ "$y" = "${FOLDER##*/}" ] || return 0
   # The room first forgets what this folder's token told it, at once rather than in 24 hours.
   give_up "$y" "$CLONE"
-  rm -f "$CLONE/yes"
+  # The next folder's yes takes the place of this one's in one rename: a worker that found the clone's
+  # yes missing for a moment, between the two, ended (worker_main) or removed the new one (pass).
   for f in "$DATA"/folders/*/answered; do
     f="${f%/answered}"
     { [ -s "$f/token" ] && [ -f "$f/clone" ] && [ "$f" != "$FOLDER" ] && [ ! -f "$f/stopped" ] && [ ! -f "$f/refused" ]; } || continue
@@ -406,16 +511,52 @@ clone_unyes() {
     [ "$c" = "$CID" ] && { put "$CLONE/yes" "${f##*/}"; return 0; }
   done
   # Nobody says yes for it now: its record of what it heard starts afresh if one does later.
-  rm -f "$CLONE/heard.k"
+  rm -f "$CLONE/yes" "$CLONE/heard.k"
   log "presence: the clone at ${COMMON:-$CID} no longer says yes"
 }
 
+# A chat in one of a folder's Claude Code worktrees (0.3.20). The desktop app starts
+# such a session with CLAUDE_PROJECT_DIR set to the main folder, so without this a worker another session
+# started in a worktree took listening from the chat its person was in, and the room woke a busy worker
+# (2026-10-17, Test room #74). Its real folder is the hook's cwd; both are compared spelled as letters,
+# digits and dots, by bash alone (3.2 on a Mac: no case folding by expansion, so nocasematch). Defined
+# here, before stop_here, which a stop runs before the hook reaches the chat start below.
+in_worktree() {
+  field cwd
+  local c="$FV" d="$dir" r=1
+  c="${c//[^A-Za-z0-9.]/_}"; d="${d//[^A-Za-z0-9.]/_}"
+  while [[ $c == *__* ]]; do c="${c//__/_}"; done
+  while [[ $d == *__* ]]; do d="${d//__/_}"; done
+  shopt -s nocasematch
+  [[ $c == "${d%_}"_.claude_worktrees_* ]] && r=0
+  shopt -u nocasematch
+  return $r
+}
+# The worktree a chat the desktop app started in one of its worktrees is in (see in_worktree), by the
+# hook's cwd, into FO: its folder's notes. Fails in any other chat. Its backslashes come doubled, as JSON
+# writes them (see the edit hook).
+chat_folder() {
+  local b='' cwd
+  in_worktree || return 1
+  [ -s "$DATA/backslash" ] || awk 'BEGIN { printf "%c", 92 }' > "$DATA/backslash"
+  IFS= read -r -d '' b < "$DATA/backslash"
+  field cwd
+  cwd="${FV//"$b$b"/"/"}"
+  clone_of "$cwd" || return 1
+  folder_of "$TOP"
+}
+
 # Off for good in this folder, until listen_here is said here again: no chat here listens, and its
-# worktree is left out of what its clone tells the room, whichever folder said yes for the clone.
+# worktree is left out of what its clone tells the room, whichever folder said yes for the clone. A chat
+# the desktop app started in a worktree has the main folder for its folder (see in_worktree), so the
+# worktree it is in stops too: as first written, 0.3.25 kept hearing that chat's edits after its stop
+# whenever another folder held the clone's yes, and kept telling the room what the worktree had (the
+# review's correctness claim 1). First, as clone_of below sets the clone clone_unyes works on.
 stop_here() {
   mkdir -p "$FOLDER" || return 1
   rm -f "$FOLDER/helper" "$FOLDER/answered" "$FOLDER/role"
   : > "$FOLDER/stopped"
+  chat_folder && mkdir -p "$FO" && : > "$FO/stopped"
   if clone_of "$dir"; then
     folder_of "$TOP"
     mkdir -p "$FO" && : > "$FO/stopped"
@@ -482,22 +623,46 @@ worker_up() {
 
 # Where the notes on one worktree are: its name to the room (a hash with this clone's own salt, so the
 # name says nothing of where it is), its folder's notes and its git dir, into WID, WFOLDER and WGD.
-# Worked out the first time a path is seen and kept in the clone's notes.
+# Worked out the first time a path is seen and kept in the clone's notes. The worker reads those notes
+# once and keeps them by the letters of each path (see yes_key), as bash variables: a line is never changed
+# once written, and read again for every worktree at every pass they cost 2.1 s of a pass on Ofir's PC.
 known() {
-  local p id f g sp
+  local id sp v l hits
   WID='' WFOLDER='' WGD=''
-  if [ -f "$c/known" ]; then
-    while IFS="$TAB" read -r p id f g; do
-      [ "$p" = "$1" ] && { WID="$id"; WFOLDER="$f"; WGD="$g"; return 0; }
-    done < "$c/known"
+  if [ -z "$KNOWN_READ" ]; then
+    KNOWN_READ=1
+    slurp "$c/known"
+    lines_of hits
+    for l in "${hits[@]}"; do known_keep "$l"; done
   fi
-  case "$1" in *"$TAB"*) return 1 ;; esac
+  yes_key "$1"
+  v="AISLE_KNOWN_$key"
+  SL="${!v}"
+  if [ -n "$SL" ]; then
+    lines_of hits
+    for l in "${hits[@]}"; do
+      [ "${l%%"$TAB"*}" = "$1" ] || continue
+      l="${l#*"$TAB"}"; WID="${l%%"$TAB"*}"
+      l="${l#*"$TAB"}"; WFOLDER="${l%%"$TAB"*}"
+      WGD="${l#*"$TAB"}"
+      return 0
+    done
+  fi
+  case "$1" in *"$TAB"*|*"$NL"*) return 1 ;; esac
   WGD=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || return 1
   sp=$(spell "$1")
   WID=$(printf 'aisle-worktree:%s:%s' "$salt" "$sp" | sha | cut -c1-16)
   folder_of "$1" "$sp"
   WFOLDER="$FO"
-  printf '%s%s%s%s%s%s%s%s' "$1" "$TAB" "$WID" "$TAB" "$WFOLDER" "$TAB" "$WGD" "$NL" >> "$c/known"
+  l="$1$TAB$WID$TAB$WFOLDER$TAB$WGD"
+  printf '%s%s' "$l" "$NL" >> "$c/known"
+  known_keep "$l"
+}
+known_keep() {
+  local v
+  yes_key "${1%%"$TAB"*}"
+  v="AISLE_KNOWN_$key"
+  printf -v "$v" '%s%s%s' "${!v}" "$1" "$NL"
 }
 
 # The committed part of a worktree's unmerged paths against the base: one line each, newest first, of
@@ -528,10 +693,12 @@ committed() {
 # A worktree's list as the room hears it, from its committed part and its git status, one line each:
 # f, its commits ("wip" first for a change not committed yet), the path, tab-separated. Paths git has
 # to quote (a tab, a quote or a newline in the name) and Unity's .meta files are left out, and so is
-# everything past the first 512.
+# everything past the first 512. Into the file $3, the same list with only what its commits changed, for
+# a worktree that has not moved for STALE_DAYS days (chosen); into $4, the files of the list it has not
+# committed that are there to be looked at (active): a deleted one has no time to read.
 listed() {
-  LC_ALL=C awk '
-    BEGIN { T = sprintf("%c", 9); Q = sprintf("%c", 34); FS = T; k = 0; out = 0 }
+  AISLE_Q="$3" AISLE_F="$4" LC_ALL=C awk '
+    BEGIN { T = sprintf("%c", 9); Q = sprintf("%c", 34); FS = T; k = 0; out = 0; qf = ENVIRON["AISLE_Q"]; ff = ENVIRON["AISLE_F"]; printf "" > qf; printf "" > ff }
     part == 1 { order[++k] = $3; n[$3] = $1; ids[$3] = $2; next }
     {
       # git status --porcelain=v2: "1 XY sub mH mI mW hH hI path", "u XY sub m1 m2 m3 mW h1 h2 h3 path".
@@ -543,6 +710,7 @@ listed() {
       for (i = 0; i < skip; i++) p = substr(p, index(p, " ") + 1)
       if (p == "" || (p in wip)) next
       wip[p] = 1
+      if (index(substr($0, 3, 2), "D") > 0) gone[p] = 1
       if (!(p in n)) { order[++k] = p; n[p] = 0; ids[p] = "" }
     }
     END {
@@ -556,8 +724,39 @@ listed() {
         if (n[p] > fit) s = s ",+"
         print "f" T s T p
         out++
+        if (p in wip) { if (!(p in gone)) print p > ff; s = substr(s, 5) }
+        if (s != "") print "f" T s T p > qf
       }
     }' part=1 "$1" part=2 "$2"
+}
+
+# The hashes of a worktree's list and of its list of commits alone, 16 hex digits each, into hash and
+# qhash ("-" for the second when its commits changed nothing), by one program. A line of sha256sum's
+# starts with a backslash when the file's name has one. "$L.h" keeps the list's hash alone, as 0.3.24
+# wrote it: a 0.3.24 worker on the same computer (an old chat's, open for days, D84) reads that whole
+# line as the hash it sends, and the room read none of a report where it was two (the combo review's
+# upgrade:0). qhash goes in "$L.qh", a note 0.3.24 never reads, after the list's hash it was made
+# with, so a list 0.3.24 rewrote since is known by its hash (one_worktree). With $1 set, "$L.q" was not
+# made from this list in this pass, and "$L.qh" is not written, so the next pass makes it again.
+hashes() {
+  local out
+  out=$(sha_files "$L" "$L.q" 2>/dev/null)
+  hash="${out%%"$NL"*}"; hash="${hash#[!0-9a-f]}"; hash="${hash:0:16}"
+  qhash="${out#*"$NL"}"; qhash="${qhash#[!0-9a-f]}"; qhash="${qhash:0:16}"
+  [[ $hash =~ ^[0-9a-f]{16}$ ]] || hash=$(sha < "$L" | cut -c1-16)
+  [ -s "$L.q" ] && [[ $qhash =~ ^[0-9a-f]{16}$ ]] || qhash=-
+  keep "$L.h" "$hash"
+  [ -n "$1" ] || keep "$L.qh" "$hash $qhash"
+  OWN=1
+}
+
+# A git status without its "# branch." lines, into BODY: a fetch changes "# branch.ab", which is not the
+# worktree moving.
+body() {
+  BODY="$1"
+  while [ "${BODY:0:2}" = "# " ]; do
+    case "$BODY" in *"$NL"*) BODY="${BODY#*"$NL"}" ;; *) BODY='' ;; esac
+  done
 }
 
 # What changed between two lists, into the record: a line for each that came (+) or went (-), from
@@ -577,18 +776,92 @@ changes() {
   ' part=1 "$before" part=2 "$2" >> "$LOGF"
 }
 
-# One look at a worktree: its list kept in the clone's notes, and a line for the report to come.
+# When a worktree last moved (0.3.25), in seconds, into ACT. Kept in "$L.a" as "<when> <looked> <head>",
+# the note's own time being when it was last looked at. It moved, at this pass, when its head is not the
+# one kept (a commit, a checkout, a reset), when its git status moved (MOVED), or when a file it has not
+# committed is newer than the note. Never by its reflog file's time: a git gc, a git maintenance run or a
+# reflog expire rewrites every worktree's logs/HEAD, and 3 days of every worktree came back as moved (the
+# review's F5). The reflog is read once, at a worktree's first look, and then for the time its last entry
+# itself says. The files are looked at again once in each ACTIVE_LOOK seconds: in Git Bash one test of a
+# file's time costs about 0.3 ms, and 1 ms for one that is not there (measured 2026-10-20), and Ofir's
+# clone has 7,342 files not committed across 58 worktrees. Each worktree looks at its own moment of those
+# 10 minutes, set by its id, so the looks spread over the passes rather than all falling in the same one
+# (7 s of a pass on Ofir's PC). Bash's own tests, but a worktree's first look, which reads its newest
+# file's time with one program.
+ACTIVE_LOOK=600
+active() {
+  local w="$1" a="$L.a" at='' looked='' was='' p new='' f='' off=0 list r ep='' t
+  [ -f "$a" ] && read -r at looked was < "$a"
+  { [[ $at =~ ^[0-9]+$ ]] && [[ $looked =~ ^[0-9]+$ ]]; } || at=''
+  if [ -n "$at" ]; then
+    ACT=$at
+    # A note from before the head was kept in it has none to compare: the files and MOVED say. EDITED
+    # holds the worktrees Claude was about to edit a file in since the last pass (presence_note).
+    if [ -n "$MOVED" ] || { [ -n "$was" ] && [ "$was" != "$head" ]; }; then new=1
+    elif [[ $EDITED == *"$NL$WID$NL"* ]]; then new=1
+    else
+      [[ ${WID:0:3} =~ ^[0-9a-f]+$ ]] && off=$(( 16#${WID:0:3} % ACTIVE_LOOK ))
+      [ "$PASS_AT" -ge "$looked" ] && [ $(( (PASS_AT + off) / ACTIVE_LOOK )) -eq $(( (looked + off) / ACTIVE_LOOK )) ] && [ "$was" = "$head" ] && return 0
+      slurp "$L.f"
+      lines_of list
+      for p in "${list[@]}"; do [ "$w/$p" -nt "$a" ] && { new=1; break; }; done
+    fi
+    [ -n "$new" ] && ACT=$PASS_AT
+  else
+    # The reflog's last line, "<old> <new> <name> <email> <time> <zone>", a tab and what it did: its time,
+    # which a gc keeps as it was. Its last 4 KB are enough for one line. With no reflog (it can be turned
+    # off), the time of the HEAD file, which a gc does not write.
+    slurp "$WGD/logs/HEAD"
+    r="$SL"
+    [ "${#r}" -gt 4096 ] && r="${r: -4096}"
+    case "$r" in *"$NL"*) r="${r##*"$NL"}" ;; *) [ "${#SL}" -gt 4096 ] && r='' ;; esac
+    r="${r%%"$TAB"*}"; r="${r% *}"; ep="${r##* }"
+    [[ $ep =~ ^[0-9]+$ ]] || { ep=''; [ -f "$WGD/HEAD" ] && f="$WGD/HEAD"; }
+    slurp "$L.f"
+    lines_of list
+    for p in "${list[@]}"; do
+      if [ -n "$f" ]; then [ "$w/$p" -nt "$f" ] && f="$w/$p"; else [ -e "$w/$p" ] && f="$w/$p"; fi
+    done
+    ACT=$ep
+    if [ -n "$f" ]; then
+      # GNU's date, and BSD's since 2015, then BSD's stat. A time neither can read is now: a worktree is
+      # never left out for want of one.
+      t=$(date -r "$f" +%s 2>/dev/null) || t=''
+      [[ $t =~ ^[0-9]+$ ]] || t=$(stat -f %m "$f" 2>/dev/null) || t=''
+      [[ $t =~ ^[0-9]+$ ]] || t=$PASS_AT
+      { [ -z "$ACT" ] || [ "$t" -gt "$ACT" ]; } && ACT=$t
+    fi
+    [ -n "$ACT" ] || ACT=$PASS_AT
+  fi
+  keep "$a" "$ACT $PASS_AT $head"
+}
+
+# One look at a worktree: its list kept in the clone's notes, and a line for the report to come. What a
+# pass gathers goes into COVERED, INDEX, WTS, ACTS and CURRENT, each written once after the pass (pass),
+# and the worktrees that said stop into STOPS, for the report.
 one_worktree() {
-  local w="$1" L line head='' mb key='' st='' seen='' hash=''
+  local w="$1" L line head='' mb key='' st='' seen='' was='' hash='' qhash='' more='' made='' OWN=''
+  MOVED=''
   [ -d "$w" ] || return 0
   known "$w" || return 0
-  # Left out when its own folder said stop, whoever said yes for the clone.
-  [ -f "$WFOLDER/stopped" ] && return 0
-  printf '%s%s' "$w" "$NL" >> "$TMP/covered"
+  CURRENT="$CURRENT$w$TAB$WID$TAB$WFOLDER$TAB$WGD$NL"
+  # Left out when its own folder said stop, whoever said yes for the clone, and named to the room as one to
+  # forget (report).
+  [ -f "$WFOLDER/stopped" ] && { STOPS="$STOPS$WID$NL"; return 0; }
+  COVERED="$COVERED$w$NL"
   yes_key "$w"
-  printf '%s%s%s%s' "$key" "$TAB" "$WID" "$NL" >> "$TMP/index"
+  INDEX="$INDEX$key$TAB$WID$NL"
   { [ -n "$base" ] && [ -z "$shallow" ]; } || return 0
   L="$c/w/$WID"
+  # This copy's notes on the list ("$L.q", "$L.f", "$L.qh") stand only for the list they were made from.
+  # A 0.3.24 pass rewrites the list and "$L.h", never them, so they are made again from the list when
+  # "$L.qh" was made with another list than "$L.h" names, or there is none, or "$L.h" holds two hashes
+  # (as 0.3.25 first wrote it): never trusted as they are (the combo review's merge:1).
+  # No test first: in Git Bash a test of a file costs about as much as reading it, and a note that is not
+  # there leaves the names empty, which is not this copy's own (the worker's errors go nowhere).
+  read -r hash more < "$L.h"
+  read -r made qhash < "$L.qh"
+  [ -n "$hash" ] && [ -z "$more" ] && [ "$made" = "$hash" ] && [ -n "$qhash" ] && OWN=1
   if [ -f "$WGD/MERGE_HEAD" ] || [ -f "$WGD/CHERRY_PICK_HEAD" ] || [ -f "$WGD/REVERT_HEAD" ] || [ -d "$WGD/rebase-merge" ] || [ -d "$WGD/rebase-apply" ]; then
     # Halfway through a merge or a rebase the index holds the other side's changes too, so the room
     # keeps what this worktree had before it began.
@@ -596,13 +869,22 @@ one_worktree() {
     [ -f "$L.k" ] && read -r head mb < "$L.k"
   else
     git --no-optional-locks -C "$w" -c core.quotePath=off status --porcelain=v2 --branch --no-renames -uno --ignore-submodules > "$TMP/st" 2>/dev/null || return 0
-    IFS= read -r line < "$TMP/st"
+    slurp "$TMP/st"
+    st="$SL"
+    line="${st%%"$NL"*}"
     head="${line#"# branch.oid "}"
     { [ "$head" != "$line" ] && [ "$head" != "(initial)" ]; } || return 0
-    IFS= read -r -d '' st < "$TMP/st"
-    [ -f "$L.seen" ] && IFS= read -r -d '' seen < "$L.seen"
+    # This copy's own last look ("$L.sn"), which 0.3.24 never writes: a move only a 0.3.24 pass saw is
+    # still a move here, and "$L.f" is made again. "$L.seen" when there is none yet (just upgraded).
+    slurp "$L.sn"
+    [ -n "$SL" ] || slurp "$L.seen"
+    seen="$SL"
+    # The worktree itself moved, not just the base or its upstream: a file changed, was deleted, was
+    # staged. Then when it last moved is this pass (active); a commit or a checkout moves its head.
+    was="${seen#*"$NL"}"
+    if [ "$st" != "$was" ]; then body "$was"; was="$BODY"; body "$st"; [ "$BODY" = "$was" ] || MOVED=1; fi
     # Nothing moved since the last look, neither this worktree nor the base: its list stands.
-    if [ "$base$NL$st" != "$seen" ] || [ ! -f "$L" ]; then
+    if [ -z "$OWN" ] || [ "$base$NL$st" != "$seen" ] || [ ! -f "$L" ] || [ ! -f "$L.q" ]; then
       [ -f "$L.k" ] && IFS= read -r key < "$L.k"
       if [ "$key" != "$head $base" ] || [ ! -f "$L.c" ]; then
         # An orphan branch has nothing to be merged into the base, and so nothing to say.
@@ -611,28 +893,80 @@ one_worktree() {
         mv -f "$TMP/c" "$L.c"
         keep "$L.k" "$head $base"
       fi
-      listed "$L.c" "$TMP/st" > "$TMP/list" || return 0
-      if same_file "$TMP/list" "$L"; then rm -f "$TMP/list"
+      listed "$L.c" "$TMP/st" "$TMP/q" "$TMP/f" > "$TMP/list" || return 0
+      mv -f "$TMP/f" "$L.f"
+      if same_file "$TMP/list" "$L" && [ -f "$L.q" ]; then
+        rm -f "$TMP/list"
+        # The list stands; this copy's notes on it are made again when they were not its own.
+        if [ -n "$OWN" ]; then rm -f "$TMP/q"; else mv -f "$TMP/q" "$L.q"; hashes; fi
       else
         # Every change to what this worktree has unmerged goes into the record, with its commits.
         changes "$L" "$TMP/list" "clone-$CID" own 2 "$WID"
         mv -f "$TMP/list" "$L"
-        keep "$L.h" "$(sha < "$L" | cut -c1-16)"
+        mv -f "$TMP/q" "$L.q"
+        hashes
         DIRTY=1
       fi
-      keep "$L.seen" "$base$NL$st"
+      # "$L.seen" exactly as 0.3.24 writes it (git's last newline kept), so a 0.3.24 pass reads it as
+      # its own and does not list every worktree again.
+      keep "$L.seen" "$base$NL$st$NL"
+      keep "$L.sn" "$base$NL$st"
     fi
   fi
-  [ -s "$L.h" ] || keep "$L.h" "$(sha < "$L" | cut -c1-16)"
-  IFS= read -r hash < "$L.h"
-  printf '%s%s%s%s%s%s%s%s' "$WID" "$TAB" "$hash" "$TAB" "$head" "$TAB" "$WGD" "$NL" >> "$TMP/wts"
+  # Halfway through a merge the notes are kept as they are, and their hashes worked out for this pass.
+  [ -n "$OWN" ] || hashes merging
+  WTS="$WTS$WID$TAB$hash$TAB$head$TAB$WGD$NL"
+  IDS="$IDS$WID "
+  active "$w"
+  ACTS="$ACTS$ACT$TAB$WID$TAB$qhash$NL"
+}
+
+# Which worktrees the room hears of (0.3.25), into "$TMP/send", one wts line each: the 32 it keeps of a
+# clone (PRESENCE.WORKTREES), those that moved last first. One that has not moved for STALE_DAYS days is
+# heard of by its commits alone: the files it has not committed are left out, so nobody is warned of work
+# abandoned there, but a branch waiting to be merged still is (its line carries the hash of "$L.q" and
+# ends in a tab and q). One with no commit to merge is left out, and counted; so are those past the 32.
+# The counts go into "$c/counts" (all, sent, left out, past the 32, sent by their commits alone) for
+# whoami's check, and into the record when they change. 0.3.24 sent the first 32 of git's list, the
+# oldest: on Ofir's PC (2026-10-20) the 25 newest of 57 went unheard, the ones in use now among them,
+# while old agent worktrees with 340 to 396 files not committed each filled the warnings (R27,
+# live-git.md, Faults B and C). As first written, 0.3.25 left out a quiet branch's commits too (the
+# review's correctness claim 2).
+STALE_DAYS=3
+chosen() {
+  local all='' sent='' stale='' over='' quiet='' was=''
+  # The counts' file by its name in the environment: a path given with -v loses its backslashes.
+  AISLE_N="$TMP/n" LC_ALL=C awk -v now="$PASS_AT" -v old=$(( STALE_DAYS * 86400 )) -v cap=32 '
+    BEGIN { T = sprintf("%c", 9); FS = T; k = 0; n = 0; st = 0; qs = 0 }
+    part == 1 { at[$2] = $1 + 0; qh[$2] = $3; next }
+    {
+      n++
+      a = ($1 in at) ? at[$1] : now + 0
+      line = $0
+      if (now - a >= old) {
+        if (!(($1 in qh) && qh[$1] ~ /^[0-9a-f]+$/)) { st++; next }
+        line = $1 T qh[$1] T $3 T $4 T "q"
+      }
+      # Newest first, by insertion: a clone has a few dozen worktrees. Equal times keep git order.
+      for (i = ++k; i > 1 && t[i - 1] < a; i--) { t[i] = t[i - 1]; l[i] = l[i - 1] }
+      t[i] = a; l[i] = line
+    }
+    END {
+      for (i = 1; i <= k && i <= cap; i++) { print l[i]; if (substr(l[i], length(l[i]) - 1) == T "q") qs++ }
+      printf "%d%s%d%s%d%s%d%s%d", n, T, (k < cap ? k : cap), T, st, T, (k > cap ? k - cap : 0), T, qs > ENVIRON["AISLE_N"]
+    }' part=1 "$TMP/act" part=2 "$TMP/wts" > "$TMP/send" || cp "$TMP/wts" "$TMP/send"
+  [ -f "$TMP/n" ] && IFS="$TAB" read -r all sent stale over quiet < "$TMP/n"
+  [ -f "$c/counts" ] && IFS= read -r was < "$c/counts"
+  [ "$all$TAB$sent$TAB$stale$TAB$over$TAB$quiet" = "$was" ] && return 0
+  put "$c/counts" "$all$TAB$sent$TAB$stale$TAB$over$TAB$quiet"
+  record "clone-$CID" sent "$all" "$sent" "$stale" "$over" "$quiet"
 }
 
 # One report to the room, for every worktree: in full when the room may not have its list, else its
 # hash alone. Sets NEED to the worktrees the room asks for in full. The room's answer is kept as it
 # came, but for when each was last reported, which changes at every pass.
 report() {
-  local wt hash head gd sent code etag='' line rest who other since ids role='' mode='' ver='' at='' n=0
+  local wt hash head gd sent code etag='' line rest who other since ids role='' mode='' ver='' at='' n=0 answer send q stops
   NEED=''
   # A report the room refused as it was (too big, say) is not sent again for an hour: sent in full
   # every pass, it was refused every pass (the review's P6).
@@ -644,21 +978,36 @@ report() {
     rm -f "$c/refused-at"
   fi
   { printf 'aisle-presence%s1%s' "$TAB" "$NL"; printf 'repo%s%s%s' "$TAB" "$repo" "$NL"; } > "$TMP/report"
+  # Every worktree of the clone whose own folder said stop, by its id alone, at every report: the room
+  # forgets all it kept of it at once. Since d22 it keeps a worktree left out of a report until its list
+  # would have run out (8 hours for what is not committed, 24 for commits), so leaving it out is not
+  # enough for "saying stop makes the server forget that folder's lists at once". A room before d22 skips
+  # the line. Never a w line for it.
+  SL="$STOPS"
+  lines_of stops
+  for line in "${stops[@]}"; do printf 'x%s%s%s' "$TAB" "$line" "$NL"; done >> "$TMP/report"
   : > "$TMP/full"
-  while IFS="$TAB" read -r wt hash head gd; do
-    # The room keeps 32 worktrees of a clone, so no more are sent.
+  # The worktrees chosen for the room, 32 at most (chosen).
+  slurp "$TMP/send"
+  lines_of send
+  for line in "${send[@]}"; do
+    wt="${line%%"$TAB"*}"
+    line="${line#*"$TAB"}"
+    hash="${line%%"$TAB"*}"
+    # One that has not moved for STALE_DAYS days: what its commits changed, alone (chosen).
+    q=''
+    case "$line" in *"${TAB}q") q=.q ;; esac
     n=$((n + 1))
-    [ "$n" -gt 32 ] && break
     sent=''
     [ -f "$c/w/$wt.sent" ] && read -r sent < "$c/w/$wt.sent"
     if [ "$sent" = "$hash" ]; then
       printf 'w%s%s%s%s%ssame%s' "$TAB" "$wt" "$TAB" "$hash" "$TAB" "$NL" >> "$TMP/report"
     else
       printf 'w%s%s%s%s%sfull%s' "$TAB" "$wt" "$TAB" "$hash" "$TAB" "$NL" >> "$TMP/report"
-      cat "$c/w/$wt" >> "$TMP/report"
+      cat "$c/w/$wt$q" >> "$TMP/report"
       printf '%s%s%s%s' "$wt" "$TAB" "$hash" "$NL" >> "$TMP/full"
     fi
-  done < "$TMP/wts"
+  done
   [ -f "$c/etag" ] && read -r etag < "$c/etag"
   code=$(curl -sS -m 20 -A "aisle-plugin/${VER:-0.0.0}" -o "$TMP/answer" -w '%{http_code}' -H "@$DATA/folders/$yes/header" -H 'Content-Type: text/tab-separated-values' -H "If-None-Match: ${etag:--}" --data-binary "@$TMP/report" "${U%/watch}/presence" 2>/dev/null)
   case "$code" in
@@ -669,7 +1018,9 @@ report() {
       while IFS="$TAB" read -r wt hash; do keep "$c/w/$wt.sent" "$hash"; done < "$TMP/full"
       if [ "$code" = 200 ]; then
         : > "$TMP/heard"
-        while IFS= read -r line; do
+        slurp "$TMP/answer"
+        lines_of answer
+        for line in "${answer[@]}"; do
           case "$line" in
             "e$TAB"*)
               # e <who> <worktree> <reported> <since> <commits> <path>, the path last.
@@ -688,7 +1039,7 @@ report() {
             "version$TAB"*) ver="${line#version"$TAB"}" ;;
             "need$TAB"*) NEED="$NEED ${line#need"$TAB"}" ;;
           esac
-        done < "$TMP/answer" > "$TMP/heard" 3> "$TMP/heard.k"
+        done > "$TMP/heard" 3> "$TMP/heard.k"
         # The answer as it came carries names: it is not kept past this pass.
         : > "$TMP/answer"
         NEED="${NEED//[!0-9a-f ]/}"
@@ -728,7 +1079,7 @@ report() {
   local was=''
   [ -f "$c/code" ] && read -r was < "$c/code"
   if [ "$code" != "$was" ]; then
-    log "presence: the room answered HTTP ${code:-none} for $(grep -c '' "$TMP/wts") worktree(s)"
+    log "presence: the room answered HTTP ${code:-none} for $n of $(grep -c '' "$TMP/wts") worktree(s)"
     keep "$c/code" "$code"
   fi
 }
@@ -786,9 +1137,14 @@ table() {
 # it itself. Nothing in it is a path that cannot be printed. One line each, the edited file first:
 #   <file> <other file> same|co <commits> <since, s> <other worktree> <who>
 warnings() {
-  local wt hash head gd mh key cov
+  local wt hash head gd mh key cov line all
   [ -d "$c/warn" ] || mkdir "$c/warn" 2>/dev/null || return 0
-  while IFS="$TAB" read -r wt hash head gd; do
+  slurp "$TMP/wts"
+  lines_of all
+  for line in "${all[@]}"; do
+    wt="${line%%"$TAB"*}"; line="${line#*"$TAB"}"
+    hash="${line%%"$TAB"*}"; line="${line#*"$TAB"}"
+    head="${line%%"$TAB"*}"; gd="${line#*"$TAB"}"
     if [ ! -s "$c/answer" ]; then : > "$c/warn/$wt"; continue; fi
     # The commits this worktree has: its own, the base's, and the other side of a merge under way.
     mh=''
@@ -852,13 +1208,13 @@ warnings() {
     cov=''
     [ -f "$TMP/cov" ] && IFS= read -r cov < "$TMP/cov"
     record "clone-$CID" cover "$wt" "${cov%%"$TAB"*}" "${cov#*"$TAB"}"
-  done < "$TMP/wts"
+  done
 }
 
 # One pass of the worker: every worktree of the clone looked at, one report, and, when anything it
 # depends on moved, the warnings worked out again.
 pass() {
-  local common salt yes='' main='' line w='' base='' r='' shallow='' repo='' first f id wts='' tablefile=/dev/null idx=''
+  local common salt yes='' main='' line w='' base='' r='' shallow='' repo='' first f id wts='' tablefile=/dev/null idx='' wl
   DIRTY=''
   # Its notes deleted under it: it ends, and makes none of them again.
   [ -s "$c/common" ] || exit 0
@@ -878,9 +1234,11 @@ pass() {
     exit 0
   fi
   [ -f "$c/gone" ] && rm -f "$c/gone"
-  while IFS= read -r line; do
+  slurp "$TMP/wl"
+  lines_of wl
+  for line in "${wl[@]}"; do
     case "$line" in "worktree "*) main="${line#worktree }"; break ;; esac
-  done < "$TMP/wl"
+  done
   # The base: what the clone merges into. Its own setting first, then the remote's default branch. The
   # name is looked up once, and again when the clone's settings change; where it points, every pass.
   [ -f "$c/base-ref" ] && [ ! "$common/config" -nt "$c/base-ref" ] && read -r r < "$c/base-ref"
@@ -904,26 +1262,38 @@ pass() {
     fi
   fi
   [ -d "$c/w" ] || mkdir "$c/w" 2>/dev/null || exit 0
-  : > "$TMP/wts"
-  : > "$TMP/covered"
-  : > "$TMP/index"
+  # This pass's time, for when each worktree last moved (active, chosen).
+  stamp
+  PASS_AT=$NOW
+  COVERED='' INDEX='' WTS='' ACTS='' IDS='' EDITED='' STOPS='' CURRENT=''
+  # The worktrees an edit hook said Claude was about to edit a file in since the last pass (presence_note):
+  # each moved now, though its git status may not show it (a file already not committed, a new one).
+  if [ -s "$c/edited" ] && mv -f "$c/edited" "$TMP/edited" 2>/dev/null; then slurp "$TMP/edited"; EDITED="$NL$SL$NL"; fi
+  # One record each, from its "worktree" line to the next one's: the empty lines between them are gone.
   w=''
-  while IFS= read -r line; do
+  for line in "${wl[@]}"; do
     case "$line" in
-      "worktree "*) w="${line#worktree }" ;;
+      "worktree "*) [ -n "$w" ] && one_worktree "$w"; w="${line#worktree }" ;;
       bare|prunable*) w='' ;;
-      '') [ -n "$w" ] && one_worktree "$w"; w='' ;;
     esac
-  done < "$TMP/wl"
+  done
   [ -n "$w" ] && one_worktree "$w"
+  printf '%s' "$WTS" > "$TMP/wts"
+  printf '%s' "$ACTS" > "$TMP/act"
   # The worktrees an edit is heard from: in the list the edit hook reads first.
-  if ! same_file "$TMP/covered" "$c/covered"; then
-    mv -f "$TMP/covered" "$c/covered"
+  slurp "$c/covered"
+  if [ ! -f "$c/covered" ] || [ "$SL" != "${COVERED%"$NL"}" ]; then
+    put "$c/covered" "$COVERED"
     yes_index
   fi
+  # The clone's worktrees now, those that said stop too, as known spells them: the ones an edit is matched
+  # to (worktree_of). known keeps every worktree it ever had.
+  slurp "$c/current"
+  if [ ! -f "$c/current" ] || [ "$SL" != "${CURRENT%"$NL"}" ]; then put "$c/current" "$CURRENT"; fi
   # And how an edit hook finds its own worktree's warnings: by the letters of its root.
   [ -d "$c/warn" ] || mkdir "$c/warn" 2>/dev/null || exit 0
-  same_file "$TMP/index" "$c/warn/index" || { mv -f "$TMP/index" "$c/warn/index"; DIRTY=1; }
+  slurp "$c/warn/index"
+  if [ ! -f "$c/warn/index" ] || [ "$SL" != "${INDEX%"$NL"}" ]; then put "$c/warn/index" "$INDEX"; DIRTY=1; fi
   # A shallow clone, or one with no base branch, has nothing to tell the room: no change of it can be
   # told from a base, so no list is made and no warning can be worked out. Its worktrees are covered for
   # edits (above), and the worker ends rather than ask the room every pass for the others' lists, names
@@ -938,17 +1308,22 @@ pass() {
     log "presence: worker $$ ends: $f, so no unmerged change can be told; looked at again in a day"
     exit 0
   fi
-  # A worktree that is gone is forgotten here too.
-  IFS= read -r -d '' wts < "$TMP/wts"
-  for f in "$c"/w/* "$c"/warn/*; do
-    [ -f "$f" ] || continue
-    id="${f##*/}"
-    id="${id%%.*}"
-    [ "$id" = index ] && continue
-    case "$NL$wts" in *"$NL$id$TAB"*) ;; *) rm -f "$f" ;; esac
-  done
+  # A worktree that is gone is forgotten here too: looked for when the worktrees are not the last pass's,
+  # as each file's test costs a system call, and the clone's notes hold some 500 files on Ofir's PC.
+  wts="$WTS"
+  if [ "$IDS" != "$FORGOT" ]; then
+    for f in "$c"/w/* "$c"/warn/*; do
+      case "$f" in */"*") continue ;; esac
+      id="${f##*/}"
+      id="${id%%.*}"
+      [ "$id" = index ] && continue
+      case "$NL$wts" in *"$NL$id$TAB"*) ;; *) rm -f "$f" ;; esac
+    done
+    FORGOT="$IDS"
+  fi
   # Nothing is sent once the notes went in the middle of this pass.
   [ -s "$c/common" ] || exit 0
+  chosen
   report
   if [ -n "$NEED" ]; then
     for id in $NEED; do rm -f "$c/w/$id.sent"; done
@@ -1010,12 +1385,14 @@ plugin_gone() {
   local m='' v='' s='' re
   GONE=''
   [ -f "$SELF" ] || { GONE='the plugin was removed'; return 0; }
-  [ -f "$ROOT/.claude-plugin/plugin.json" ] && IFS= read -r -d '' m < "$ROOT/.claude-plugin/plugin.json"
+  slurp "$ROOT/.claude-plugin/plugin.json"
+  m="$SL"
   re='"version" *: *"([^"]*)"'
   [[ $m =~ $re ]] && v="${BASH_REMATCH[1]}"
   [ "$v" = "$VER" ] || { GONE="the plugin here is now ${v:-gone}, not $VER"; return 0; }
   { [ -n "$PKEY" ] && [ -f "$SETTINGS" ]; } || return 1
-  IFS= read -r -d '' s < "$SETTINGS"
+  slurp "$SETTINGS"
+  s="$SL"
   re="$q${PKEY//./[.]}$q *: *false"
   [[ $s =~ $re ]] && { GONE='the plugin was switched off'; return 0; }
   return 1
@@ -1047,6 +1424,7 @@ worker_main() {
   forget_heard
   TMP="$c/tmp"
   SENTWITH=''
+  FORGOT=-
   rm -rf "$TMP"
   mkdir "$TMP" || exit 0
   trap 'rm -rf "$TMP"; forget_heard; [ "$(cat "$c/lock/pid" 2>/dev/null)" = "$$" ] && rm -rf "$c/lock"' EXIT
@@ -1109,14 +1487,77 @@ fi
 # A worktree's id, as its clone's worker names it to the room, into W: found by the letters of its root
 # ($1) in the index the worker keeps. Fails when the worker has not named it yet.
 worktree_id() {
-  local idx id
+  local l rows
   W=''
   [ -f "$CLONE/warn/index" ] || return 1
   yes_key "$1"
+  slurp "$CLONE/warn/index"
+  lines_of rows
   shopt -s nocasematch
-  while IFS="$TAB" read -r idx id; do [[ $idx == "$key" ]] && { W="$id"; break; }; done < "$CLONE/warn/index"
+  for l in "${rows[@]}"; do [[ ${l%%"$TAB"*} == "$key" ]] && { W="${l#*"$TAB"}"; break; }; done
   shopt -u nocasematch
   [ -n "$W" ]
+}
+
+# The worktree a path ($1, spelled with slashes) is in (0.3.25): of the worktrees the clones that said yes
+# have now, as their workers last saw them ("current"; before a worker's first pass, every one it knew),
+# the one with the longest root that holds it, and still that worktree: the .git in its root names the
+# git dir its worker found. Into WT (its root as git spells it), WID, WFOLDER, WGD, CID and CLONE, by bash
+# alone; fails when none does. As first written it matched every worktree a worker had ever seen, so a
+# folder of a worktree since removed, holding another repository now or none, had its files' paths sent
+# under this project (the review's privacy claim F3). A worktree that said stop is found too, so its stop
+# is kept. The desktop app starts a chat in one of its worktrees with
+# CLAUDE_PROJECT_DIR set to the main folder (see in_worktree), and 0.3.24 took an edit's worktree from
+# that: on Ofir's PC 381 of 384 edits (2026-10-17 to 10-20) went under the main folder's id, as paths
+# that start .claude/worktrees/<name>/, so no warning and no live mark ever matched them; and a session
+# that edits another worktree of the clone by its full path, as an agent does, went unheard (R27, Fault A).
+worktree_of() {
+  local f="$1" k l p id fo gd n hit len=0 rows g='' d oc="$CLONE" oi="$CID"
+  WT='' WID='' WFOLDER='' WGD=''
+  case "$f" in /[A-Za-z]/*) f="${f:1:1}:${f:2}" ;; esac
+  for k in "$DATA"/clones/*/known; do
+    { [ -f "$k" ] && [ -f "${k%/known}/yes" ]; } || continue
+    d="${k%/known}"
+    [ -f "$d/current" ] && k="$d/current"
+    slurp "$k"
+    lines_of rows
+    for l in "${rows[@]}"; do
+      p="${l%%"$TAB"*}"
+      n="$p"
+      case "$n" in /[A-Za-z]/*) n="${n:1:1}:${n:2}" ;; esac
+      [ "${#n}" -gt "$len" ] || continue
+      hit=''
+      # A drive letter means Windows, where a folder's name is the same in any case.
+      case "$n" in [A-Za-z]:/*) shopt -s nocasematch ;; esac
+      [[ $f == "$n"/* ]] && hit=1
+      shopt -u nocasematch
+      [ -n "$hit" ] || continue
+      l="${l#*"$TAB"}"; id="${l%%"$TAB"*}"
+      l="${l#*"$TAB"}"; fo="${l%%"$TAB"*}"; gd="${l#*"$TAB"}"
+      len=${#n} WT="$p" WID="$id" WFOLDER="$fo" WGD="$gd" CLONE="$d"
+    done
+  done
+  [ -n "$WT" ] || return 1
+  CID="${CLONE##*/}"
+  # A linked worktree's .git is a file, "gitdir: <its git dir>" (relative to the root when git was told
+  # to); the main one's, the git dir itself.
+  if [ -f "$WT/.git" ]; then
+    slurp "$WT/.git"
+    g="${SL%%"$NL"*}"
+    case "$g" in "gitdir: "*) g="${g#gitdir: }" ;; *) g='' ;; esac
+    case "$g" in ''|/*|[A-Za-z]:/*) ;; *) normal "$WT/$g"; g="$NORMAL" ;; esac
+  elif [ -d "$WT/.git" ]; then g="$WT/.git"
+  fi
+  gd="$WGD"
+  case "$g" in /[A-Za-z]/*) g="${g:1:1}:${g:2}" ;; esac
+  case "$gd" in /[A-Za-z]/*) gd="${gd:1:1}:${gd:2}" ;; esac
+  hit=''
+  case "$gd" in [A-Za-z]:/*) shopt -s nocasematch ;; esac
+  [ -n "$g" ] && [[ $g == "$gd" ]] && hit=1
+  shopt -u nocasematch
+  [ -n "$hit" ] && return 0
+  WT='' WID='' WFOLDER='' WGD='' CID="$oi" CLONE="$oc"
+  return 1
 }
 
 # D46: what another session has unmerged, on the file about to change or on one that usually changes
@@ -1137,17 +1578,26 @@ presence_note() {
   local w='' mode=shadow salt=- head=- said='' lines g c kind ids since other who
   local arm arms shown cos=0 nco=0 newco=0 what age same='' co='' cs='' ws='' one='' add='' recs=''
   NOTE=''
-  worktree_id "$root" || return 0
-  w="$W"
   [ -f "$CLONE/mode" ] && IFS="$TAB" read -r mode salt < "$CLONE/mode"
   [ -f "$CLONE/table.head" ] && read -r head < "$CLONE/table.head"
+  # The worktree the edit is in, as worktree_of found it, else by its root. One its worker has not named
+  # yet is recorded as -, so the record shows an edit that no warning could reach (0.3.25).
+  W="$WID"
+  if [ -z "$W" ] && ! worktree_id "$root"; then record "chat-$sid" edit - "${mode:-shadow}" "$rel"; return 0; fi
+  w="$W"
   record "chat-$sid" edit "$w" "${mode:-shadow}" "$rel"
+  # For its clone's worker: this worktree moved now (active), though no git status may show it yet.
+  printf '%s%s' "$w" "$NL" 2>/dev/null >> "$CLONE/edited"
   [ -s "$CLONE/warn/$w" ] || return 0
   # A path that would need escaping is never in the warnings, so it is not looked for.
   case "$rel" in *"$bs"*|*"$q"*) return 0 ;; esac
   lines=$(grep -F -e "$rel$TAB" "$CLONE/warn/$w" 2>/dev/null) || return 0
-  [ -f "$DATA/said-warnings-$sid" ] && IFS= read -r -d '' said < "$DATA/said-warnings-$sid"
-  while IFS="$TAB" read -r c kind shown; do [ "$kind$shown" = co1 ] && cos=$(( cos + 1 )); done <<< "$said"
+  # What this chat was told already, a line each, and how many co-change files of them were shown.
+  slurp "$DATA/said-warnings-$sid"
+  said="${SL:+$SL$NL}"
+  c="${TAB}co${TAB}1$NL"
+  kind="${said//"$c"/}"
+  cos=$(( (${#said} - ${#kind}) / ${#c} ))
   stamp
   # In the test, the half of every co-change file this worktree has not had yet, by one SHA-256 program
   # for all of them: one program for each once made such an edit wait 5 to 15 s (the review's P1). The
@@ -1156,7 +1606,8 @@ presence_note() {
   arms="$NL"
   if [ "$mode" = test ]; then
     local n=0 k=0 took='' todo='' left out d cache='' kept="$CLONE/warn/$w.arms" files=()
-    [ -f "$kept" ] && IFS= read -r -d '' cache < "$kept"
+    slurp "$kept"
+    cache="${SL:+$SL$NL}"
     if [ "${cache%%"$NL"*}" = "$salt" ]; then arms="$NL${cache#*"$NL"}"; else cache=''; fi
     while IFS="$TAB" read -r g c kind ids since other who; do
       { [ "$g" = "$rel" ] && [ "$kind" = co ]; } || continue
@@ -1264,25 +1715,34 @@ case "$tool" in
   Edit|Write|MultiEdit|NotebookEdit)
     [ "$event" = "PreToolUse" ] || exit 0
     [ -f "$DATA/yes" ] || yes_index
-    [ -f "$FOLDER/stopped" ] && exit 0
     field file_path; file="$FV"
     [ -z "$file" ] && { field notebook_path; file="$FV"; }
     [ -z "$file" ] && exit 0
+    # Claude Code writes each backslash of a Windows path doubled, as JSON does; the awk call, made once
+    # and kept, makes one without this file holding any.
+    bs=''
+    [ -s "$DATA/backslash" ] || awk 'BEGIN { printf "%c", 92 }' > "$DATA/backslash"
+    IFS= read -r -d '' bs < "$DATA/backslash"
+    f="${file//"$bs$bs"/"/"}"
+    # The edit's folder is the worktree its file is in, whatever folder the chat started in (0.3.25).
+    if worktree_of "$f"; then dir="$WT"; FOLDER="$WFOLDER"; fi
+    [ -f "$FOLDER/stopped" ] && exit 0
     # Told with this folder's own token when it said yes, else with its clone's.
     TOK="$FOLDER"
     if [ ! -f "$FOLDER/answered" ] || [ ! -s "$FOLDER/token" ]; then
-      covered_here || exit 0
+      # A worktree worktree_of found is one of a clone that said yes, and did not say stop itself.
+      [ -n "$WT" ] || covered_here || exit 0
       read -r y < "$CLONE/yes"
       TOK="$DATA/folders/$y"
       [ -s "$TOK/token" ] || exit 0
     fi
     # The project: its root here, and a name every clone of it shares, a hash of its first commit.
-    root=''
+    root="$WT"
     repo=''
-    [ -f "$FOLDER/root" ] && IFS= read -r root < "$FOLDER/root"
+    [ -n "$root" ] || { [ -f "$FOLDER/root" ] && IFS= read -r root < "$FOLDER/root"; }
     [ -f "$FOLDER/repo" ] && IFS= read -r repo < "$FOLDER/repo"
     if [ -z "$root" ] || [ -z "$repo" ]; then
-      root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
+      [ -n "$root" ] || root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
       [ -n "$root" ] || exit 0
       # A worktree of a clone the worker reports for takes the project's name from the clone's notes:
       # walking the whole history again for each new worktree folder cost a third of a second on a big
@@ -1309,13 +1769,8 @@ case "$tool" in
     NEWS=''
     [ "$TOK" = "$FOLDER" ] && [ -n "$CLONE" ] && [ ! -f "$CLONE/told" ] && [ ! -f "$FOLDER/refused" ] && NEWS="$NEWS_LINE"
     # Only the path inside the project leaves this computer, never the folders above it, which carry the
-    # person's name (0.3.4 sent them, and the room kept only the inside part). Claude Code writes each
-    # backslash of a Windows path doubled, as JSON does; the awk call, made once and kept, makes one
-    # without this file holding any. Whatever else is escaped stays escaped, so the body is still JSON.
-    bs=''
-    [ -s "$DATA/backslash" ] || awk 'BEGIN { printf "%c", 92 }' > "$DATA/backslash"
-    IFS= read -r -d '' bs < "$DATA/backslash"
-    f="${file//"$bs$bs"/"/"}"
+    # person's name (0.3.4 sent them, and the room kept only the inside part). The backslashes were made
+    # slashes above; whatever else is escaped stays escaped, so the body is still JSON.
     r="$root"
     re='^/([A-Za-z])/(.*)$'
     [[ $f =~ $re ]] && f="${BASH_REMATCH[1]}:/${BASH_REMATCH[2]}"
@@ -1326,6 +1781,14 @@ case "$tool" in
     [[ $f == "$r"/* ]] || exit 0
     shopt -u nocasematch
     rel="${f:${#r}+1}"
+    # A file in a worktree or a repository inside this one that no worker has seen yet (a worktree made
+    # a moment ago, a submodule) is not this worktree's file: it is said nowhere, rather than under this
+    # worktree's name as 0.3.24 did, and its stop, if it said one, is kept (0.3.25). Bash's own tests.
+    up="$rel"
+    while [[ $up == */* ]]; do
+      up="${up%/*}"
+      [ -e "$r/$up/.git" ] && exit 0
+    done
     # What other sessions have unmerged, worked out on this computer, before the room is asked.
     NOTE=''
     [ -n "$CLONE" ] && presence_note
@@ -1389,21 +1852,64 @@ if [ "$event" = "PreToolUse" ]; then
   exit 0
 fi
 
-# What this computer knows of the clone's reports, for whoami's check.
+# The worktree this chat is in, by the hook's cwd (0.3.25), as worktree_of finds it; fails outside every
+# one. Its backslashes come doubled, as JSON writes them (see the edit hook).
+chat_worktree() {
+  local b=''
+  field cwd
+  [ -n "$FV" ] || return 1
+  [ -s "$DATA/backslash" ] || awk 'BEGIN { printf "%c", 92 }' > "$DATA/backslash"
+  IFS= read -r -d '' b < "$DATA/backslash"
+  worktree_of "${FV//"$b$b"/"/"}/"
+}
+
+# The record's last 7 days, for whoami's check (0.3.25): the edits in this clone's worktrees, how many were
+# matched to the worktree they were made in, and the warnings worked out, shown to Claude or not. An edit
+# no worktree was matched to (recorded as -) cannot say which clone it was in, so it counts in every
+# clone's line; on a computer with one clone that said yes, the usual, the line is exact.
+week() {
+  [ -f "$CLONE/known" ] || return 0
+  stamp
+  find "$DATA/logs" -type f -name '*-chat-*.tsv' -mtime -7 -exec cat {} + 2>/dev/null | LC_ALL=C awk -v since=$(( NOW - 7 * 86400 )) '
+    BEGIN { T = sprintf("%c", 9); FS = T; e = 0; m = 0; k = 0; s = 0 }
+    part == 1 { mine[$2] = 1; next }
+    $1 + 0 < since + 0 { next }
+    $2 == "edit" { if ($3 in mine) { e++; m++ } else if ($3 == "-") e++; next }
+    $2 == "warn" && ($3 in mine) { k++; if ($8 == "1") s++ }
+    END { printf "last 7 days: %d edit(s), %d matched to a worktree, %d warning(s) worked out, %d shown", e, m, k, s }
+  ' part=1 "$CLONE/known" part=2 -
+}
+
+# What this computer knows of the clone's reports, for whoami's check, for the worktree the chat is in.
+# With the counts that would have shown 0.3.24's faults, unseen for 12 days (R27, live-git.md): how many
+# worktrees the room hears of and why not the others (chosen), and the record's last 7 days (week).
 presence_check() {
-  local n=0 role='' mode=shadow salt
-  if ! here_clone || [ ! -f "$CLONE/yes" ]; then
+  local n=0 role='' mode=shadow salt f="$FOLDER" all='' sent='' stale='' over='' quiet='' left='' by='' x
+  if chat_worktree; then f="$WFOLDER"
+  elif ! here_clone || [ ! -f "$CLONE/yes" ]; then
     printf 'unmerged files: not told to the room (no folder of this clone said yes)'
     return
   fi
-  if [ -f "$FOLDER/stopped" ]; then printf 'unmerged files: this worktree is left out (it said stop)'; return; fi
+  if [ -f "$f/stopped" ]; then printf 'unmerged files: this worktree is left out (it said stop)'; return; fi
   [ -f "$CLONE/covered" ] && n=$(grep -c '' "$CLONE/covered")
   [ -f "$CLONE/role" ] && read -r role < "$CLONE/role"
   [ -f "$CLONE/mode" ] && IFS="$TAB" read -r mode salt < "$CLONE/mode"
+  [ -f "$CLONE/counts" ] && IFS="$TAB" read -r all sent stale over quiet < "$CLONE/counts"
+  [ -n "$quiet" ] || quiet=0
+  [[ $all =~ ^[0-9]+$ && $sent =~ ^[0-9]+$ && $stale =~ ^[0-9]+$ && $over =~ ^[0-9]+$ && $quiet =~ ^[0-9]+$ ]] || all=''
   if [ -z "$role" ]; then printf 'unmerged files: not told yet; the room has not answered this clone'; return; fi
-  printf 'unmerged files: told to the room for %s worktree(s) of this clone, paths and commit ids only ✓ · ' "$n"
+  if [ -n "$all" ]; then
+    [ "$quiet" -gt 0 ] && by=", $quiet of them unchanged for $STALE_DAYS days or more and told by their commits alone"
+    [ "$stale" -gt 0 ] && left="$stale unchanged for $STALE_DAYS days or more with no commit to merge"
+    [ "$over" -gt 0 ] && left="${left:+$left, }$over past the 32 the room keeps"
+    printf 'unmerged files: told to the room for %s of %s worktree(s) of this clone%s%s, paths and commit ids only ✓ · ' "$sent" "$all" "$by" "${left:+ (left out: $left)}"
+  else
+    printf 'unmerged files: told to the room for %s worktree(s) of this clone, paths and commit ids only ✓ · ' "$n"
+  fi
   if [ "$mode" = test ]; then printf 'a file that usually changes with one another session has unmerged: the room is testing these warnings, so half are shown'
   else printf 'a file that usually changes with one another session has unmerged: not shown yet, only recorded on this computer for a test'; fi
+  x=$(week)
+  [ -n "$x" ] && printf ' · %s' "$x"
 }
 
 # A post in the room, into the record (C2: "or post in the room" is what the warning asks for): only
@@ -1412,6 +1918,12 @@ presence_check() {
 post_record() {
   local re='"(text|tool_response)" *: *"Posted as #' root="$dir"
   [[ $input =~ $re ]] || return 0
+  # From the worktree the chat is in, which may not be the folder it started in (0.3.25): 24 of the 26
+  # posts on Ofir's PC (2026-10-17 to 10-20) went under the main folder's id.
+  if chat_worktree; then
+    [ -f "$WFOLDER/stopped" ] || record "chat-$sid" post "$WID"
+    return 0
+  fi
   [ -f "$FOLDER/stopped" ] && return 0
   { here_clone && [ -f "$CLONE/yes" ]; } || return 0
   [ -f "$FOLDER/root" ] && IFS= read -r root < "$FOLDER/root"
@@ -1458,6 +1970,8 @@ if [ "$event" = "PostToolUse" ]; then
   # This folder has said yes once. Every later chat here starts listening without asking again.
   date -u +%Y-%m-%dT%H:%M:%SZ > "$FOLDER/answered"
   rm -f "$FOLDER/stopped" "$FOLDER/role" "$FOLDER/refused"
+  # And the worktree a desktop app's chat is in, which its stop stopped too (stop_here).
+  chat_folder && rm -f "$FO/stopped"
   told=''
   # And its clone says yes, so every worktree of it tells the room what it has unmerged (D46).
   if clone_of "$dir"; then
@@ -1485,7 +1999,7 @@ fi
 # Notes from 0.1.0 are left alone: chats started before an update keep running the old copy until they
 # restart, and removing its "already said" markers made them ask again (seen 2026-09-19).
 # A week-old session's notes are of no use to anyone.
-for pattern in 'after-*' 'said-*' 'pid-*'; do find "$DATA" -maxdepth 1 -type f -name "$pattern" -mtime +7 -delete 2>/dev/null; done
+for pattern in 'after-*' 'said-*' 'pid-*' 'handover-*'; do find "$DATA" -maxdepth 1 -type f -name "$pattern" -mtime +7 -delete 2>/dev/null; done
 forget_stale
 forget_old_records
 
@@ -1514,22 +2028,7 @@ fi
 # (D38). No question, nothing to type. The chat that had it notices at its next turn through the loop
 # and stops without a word. Stop, unlike SessionStart, never takes anything over: it runs after every
 # reply in every chat, and a room would ping-pong between two open chats forever.
-# A chat in one of this folder's Claude Code worktrees is not that chat (0.3.20). The desktop app starts
-# such a session with CLAUDE_PROJECT_DIR set to the main folder, so without this a worker another session
-# started in a worktree took listening from the chat its person was in, and the room woke a busy worker
-# (2026-10-17, Test room #74). Its real folder is the hook's cwd; both are compared spelled as letters,
-# digits and dots, by bash alone (3.2 on a Mac: no case folding by expansion, so nocasematch).
-in_worktree() {
-  field cwd
-  local c="$FV" d="$dir" r=1
-  c="${c//[^A-Za-z0-9.]/_}"; d="${d//[^A-Za-z0-9.]/_}"
-  while [[ $c == *__* ]]; do c="${c//__/_}"; done
-  while [[ $d == *__* ]]; do d="${d//__/_}"; done
-  shopt -s nocasematch
-  [[ $c == "${d%_}"_.claude_worktrees_* ]] && r=0
-  shopt -u nocasematch
-  return $r
-}
+# A chat in one of this folder's Claude Code worktrees is not that chat (0.3.20): see in_worktree.
 # Nor is a chat that only compacted (0.3.22): Claude Code starts it again with source "compact", the same
 # chat, which the person did not just open. An older chat's compaction took listening from the chat Ofir
 # had picked with listen_here (2026-10-17 04:12 UTC, listener log).
