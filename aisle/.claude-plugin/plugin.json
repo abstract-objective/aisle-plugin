@@ -1,7 +1,7 @@
 {
   "name": "aisle",
-  "displayName": "AIsle",
-  "version": "0.3.25",
+  "displayName": "AIsle by AO",
+  "version": "0.3.26",
   "description": "Your Claude in your AIsle rooms: it reads and posts, the chat you pick in a folder wakes by itself when someone else writes, and it can bring an existing project in as a plan.",
   "author": { "name": "Abstract Objective", "url": "https://abstractobjective.dev" },
   "homepage": "https://aisle.abstractobjective.dev/aisle/",

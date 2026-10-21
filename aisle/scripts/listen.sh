@@ -66,12 +66,19 @@ fi
 # worktrees of a clone that said yes are in it too (D46).
 yes_key() { key="${1//[!A-Za-z0-9]/}"; }
 
-# A whole file into SL, without the newlines it ends with, by bash alone. Git Bash's read takes one byte
-# per system call, about 4.7 us a byte (measured 2026-10-20): the worker read its worktrees' git status
-# and notes that way, 1 MB a pass on Ofir's PC, and held about 10% of a core all day, 87% of it in the
-# kernel. $(<file) reads in blocks, and bash 5.3 starts no process for it (0.3 ms, against 15 ms for one
-# that forks); an older bash would fork for it, so it reads as before.
-if [ "${BASH_VERSINFO[0]:-0}" -gt 5 ] || { [ "${BASH_VERSINFO[0]:-0}" -eq 5 ] && [ "${BASH_VERSINFO[1]:-0}" -ge 3 ]; }; then
+# A whole file into SL, without the newlines it ends with. Git Bash's read takes one byte per system call,
+# about 4.7 us a byte (measured 2026-10-20): the worker read its worktrees' git status and notes that way,
+# 1 MB a pass on Ofir's PC, and held about 10% of a core all day, 87% of it in the kernel. $(<file) reads
+# in blocks, and bash 5.2 and newer start no process for it (0.2 to 0.3 ms, measured on 5.2.37, Git for
+# Windows before 2.54, and on 5.3.9); an older bash (macOS's 3.2, the 5.0 and 5.1 of older Linux) forks
+# once for it (15 ms a fork here), which beats a byte a time from about 3 KB on. The test first read 5.3
+# and sent a hook on 5.2 to the byte read for nothing, 1 to 26 ms a note (the 0.3.26 review's shells:2).
+# So the worker, in the background, reads in blocks on every bash: as first written it read as before on
+# an older bash, and kept 0.3.24's cost there (the combo review's shells:0). A hook on an older bash reads
+# its small notes a byte at a time, where a fork would add to each edit's wait; slurp_big, for a note that
+# grows with the clone (where its worktrees are, the folders' spellings), reads in blocks on every bash.
+slurp_big() { SL=''; [ -f "$1" ] && SL=$(<"$1"); return 0; }
+if [ -n "$WORKER" ] || [ "${BASH_VERSINFO[0]:-0}" -gt 5 ] || { [ "${BASH_VERSINFO[0]:-0}" -eq 5 ] && [ "${BASH_VERSINFO[1]:-0}" -ge 2 ]; }; then
   slurp() { SL=''; [ -f "$1" ] && SL=$(<"$1"); return 0; }
 else
   slurp() {
@@ -84,10 +91,115 @@ fi
 # The lines of SL into the array named $1, empty ones left out, by bash alone.
 lines_of() { local IFS="$NL"; set -f; eval "$1"'=($SL)'; set +f; }
 
+# One string field of the hook's input, into FV, by bash alone. The first one, as grep found it before.
+field() { FV=''; local re="$q$1$q *: *$q([^$q]*)$q"; [[ $input =~ $re ]] && FV="${BASH_REMATCH[1]}"; }
+
+# A worker never makes the data folder: one deleted under it (an uninstall that wipes the plugin's data,
+# say) stays deleted, and the worker ends at its next look (the review's R2). For the same reason the
+# worker makes every folder below it without -p.
+if [ -n "$WORKER" ]; then [ -d "$DATA" ] || exit 0; else [ -d "$DATA" ] || mkdir -p "$DATA" || exit 0; fi
+
+field session_id; sid="${FV//[!A-Za-z0-9-]/}"
+field hook_event_name; event="${FV//[!A-Za-z]/}"
+[ -z "$sid" ] && sid=unknown
+[ -n "$WORKER" ] && sid=worker
+
+log() {
+  if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 200000 ]; then tail -n 300 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"; fi
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $sid $*" >> "$LOG"
+}
+
+# An open chat runs the newest installed copy of this script, not the copy it started with (D84). Claude
+# Code keeps each version of the plugin in a folder of its own, named by the version, and a chat runs
+# the copy that was newest when it opened for as long as it stays open, which for some chats is days. So
+# a fix to listening reached only the chats opened after it: 6 minutes after 0.3.22 went live, an older
+# chat's compaction, on an older copy, took listening from the chat Ofir had picked (2026-10-17 04:46
+# UTC, listener log). So a copy hands the hook to the newest copy in the folder beside its own that has
+# this script and is not set aside (.orphaned_at), or, when its own copy is the one set aside (a
+# rollback), to the copy installed now, even a lower one.
+# The newer copy runs in this same process, with the input already read: Claude Code ends a hook by
+# killing its process alone, and a second process (exec is one in Git Bash) outlived both the hook's
+# timeout and its chat (measured with Claude Code 2.1.299, 2026-10-17). Sharing the process is a contract
+# every later version keeps: it runs under an older chat's hooks.json (its events, timeouts, no
+# arguments), and with AISLE_HANDED set it reads no input and hands over to nobody.
+# Each copy is checked once per version on this computer before it is handed anything: it parses, and it
+# knows AISLE_HANDED, since a copy that does not would wait 3 seconds on an input already read. One that
+# fails is passed over for the next one down, and checked again only when its script changes, so a broken
+# release costs nothing per hook and a half-written copy is not kept out for good. After that bash alone
+# looks, one folder listing and a test or two, so an edit pays no program for it.
+# The "no" note has the time from before the check, so a copy Claude Code finished while it ran is newer
+# than the note and checked again at the next hook (it was made after the check, and kept such a copy out:
+# the combo review's shells:2). On Windows Claude Code's copy keeps its source's time (seen on Ofir's PC,
+# 0.3.24), which no note can be newer than, so a "no" also lasts only 10 minutes: the first start or reply
+# after that clears it (below, with the week-old notes), and a broken copy costs a check every 10 minutes.
+# It runs before the edit hook's fast path below, so all a chat's own copy keeps for good is the input
+# read and the hand-over itself: ready() and handover() always run from the chat's own copy, and the copy
+# handed to skips its own, so how a copy is checked and which one is picked (the .orphaned_at rule, the
+# "no" note, the version from the folder's name) stay the chat's copy's for the chat's whole life (the
+# 0.3.26 review's xver:3). In 0.3.25 the fast path came first, and an edit in a folder that never said yes
+# kept the rules of the copy the chat opened with (the combo review's merge:3). So it starts no program
+# either: its own version is its folder's name, as Claude Code names them (plugin.json is read after it),
+# and at an edit it writes no log line, which starts two; the session's next start or reply writes it.
+# Not the presence worker: a newer copy's worker takes the lock over and the old one ends at its next look
+# (take_over), and a rolled-back copy's ends at its next look too (plugin_gone), so the next hook, run by
+# the copy installed now, starts that copy's.
+HANDTO=''
+HANDFROM=''
+ready() {
+  local f="$1/scripts/listen.sh" v="${1##*/}" t
+  [ -s "$f" ] || return 1
+  [ -f "$DATA/handover-ok-$v" ] && return 0
+  [ -f "$DATA/handover-no-$v" ] && [ ! "$f" -nt "$DATA/handover-no-$v" ] && return 1
+  t="$DATA/handover-chk-$v-$$"
+  : > "$t"
+  if bash -n "$f" 2>/dev/null && grep -q AISLE_HANDED "$f"; then : > "$DATA/handover-ok-$v"; rm -f "$t"; return 0; fi
+  mv -f "$t" "$DATA/handover-no-$v" 2>/dev/null || : > "$DATA/handover-no-$v"
+  [ -f "$DATA/handover-$sid-$v" ] || { : > "$DATA/handover-$sid-$v"; log "passes over the copy of $v: it does not parse, or takes no hand-over (D84)"; }
+  return 1
+}
+handover() {
+  [ -z "$WORKER" ] && [ -z "$AISLE_HANDED" ] && [ -n "$CLAUDE_PLUGIN_ROOT" ] || return 0
+  local re='^([0-9]+)[.]([0-9]+)[.]([0-9]+)$' r="${CLAUDE_PLUGIN_ROOT%/}" name parent b='' v n top=0 best=''
+  name="${r##*[!0-9.]}"
+  [[ $name =~ $re ]] || return 0
+  HANDFROM="$name"
+  [ -e "$r/.orphaned_at" ] || top=$((10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]}))
+  parent="${r%"$name"}"
+  # Claude Code spells the folder with forward slashes on Windows too (2.1.299); another spelling has
+  # backslashes, which bash's own pattern matching cannot walk, so they become slashes first.
+  case "$parent" in
+    */) ;;
+    *)
+      [ -s "$DATA/backslash" ] || awk 'BEGIN { printf "%c", 92 }' > "$DATA/backslash"
+      IFS= read -r -d '' b < "$DATA/backslash"
+      parent="${parent//"$b"//}"
+      ;;
+  esac
+  for v in "$parent"*; do
+    [[ ${v##*/} =~ $re ]] || continue
+    n=$((10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]}))
+    [ "$n" -gt "$top" ] && [ "$v" != "$parent$name" ] && [ ! -e "$v/.orphaned_at" ] && ready "$v" || continue
+    top=$n
+    best="$v"
+  done
+  [ -n "$best" ] || return 0
+  v="${best##*/}"
+  [ "$event" = PreToolUse ] || [ -f "$DATA/handover-$sid-$v" ] || { : > "$DATA/handover-$sid-$v"; log "runs the listener of $v, the copy installed now, in place of its own $name (D84)"; }
+  HANDTO="$best"
+}
+handover
+if [ -n "$HANDTO" ]; then
+  AISLE_HANDED="$HANDFROM"
+  CLAUDE_PLUGIN_ROOT="$HANDTO"
+  source "$HANDTO/scripts/listen.sh" "$@"
+  exit $?
+fi
+
 # The edit hook runs before every Edit and Write in every project on this computer, because the plugin
 # is installed for the person and not per project. So in a folder that never said yes it must cost no
 # more than bash starting, and it uses only bash's own commands until it knows. 0.3.4 did all the work
-# below first and took about a second per edit (measured 2026-10-02); bash alone starts in 0.1 s.
+# below first and took about a second per edit (measured 2026-10-02); bash alone starts in 0.1 s. The
+# hand-over above runs first and starts none, but for a copy new to this computer, checked once (D84).
 re='"hook_event_name" *: *"([A-Za-z]*)"'
 if [[ $input =~ $re ]] && [ "${BASH_REMATCH[1]}" = PreToolUse ]; then
   re='"tool_name" *: *"([^"]*)"'
@@ -123,9 +235,6 @@ if [[ $input =~ $re ]] && [ "${BASH_REMATCH[1]}" = PreToolUse ]; then
   esac
 fi
 
-# One string field of the hook's input, into FV, by bash alone. The first one, as grep found it before.
-field() { FV=''; local re="$q$1$q *: *$q([^$q]*)$q"; [[ $input =~ $re ]] && FV="${BASH_REMATCH[1]}"; }
-
 # This plugin's own version, told to the room with every poll so an old copy gets noticed (D43).
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(dirname "$0")/..}"
 VER=''
@@ -133,88 +242,6 @@ slurp "$ROOT/.claude-plugin/plugin.json"
 manifest="$SL"
 re='"version" *: *"([^"]*)"'
 [[ $manifest =~ $re ]] && VER="${BASH_REMATCH[1]}"
-
-# A worker never makes the data folder: one deleted under it (an uninstall that wipes the plugin's data,
-# say) stays deleted, and the worker ends at its next look (the review's R2). For the same reason the
-# worker makes every folder below it without -p.
-if [ -n "$WORKER" ]; then [ -d "$DATA" ] || exit 0; else [ -d "$DATA" ] || mkdir -p "$DATA" || exit 0; fi
-
-field session_id; sid="${FV//[!A-Za-z0-9-]/}"
-field hook_event_name; event="${FV//[!A-Za-z]/}"
-[ -z "$sid" ] && sid=unknown
-[ -n "$WORKER" ] && sid=worker
-
-log() {
-  if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 200000 ]; then tail -n 300 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"; fi
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $sid $*" >> "$LOG"
-}
-
-# An open chat runs the newest installed copy of this script, not the copy it started with (D84). Claude
-# Code keeps each version of the plugin in a folder of its own, named by the version, and a chat runs
-# the copy that was newest when it opened for as long as it stays open, which for some chats is days. So
-# a fix to listening reached only the chats opened after it: 6 minutes after 0.3.22 went live, an older
-# chat's compaction, on an older copy, took listening from the chat Ofir had picked (2026-10-17 04:46
-# UTC, listener log). So a copy hands the hook to the newest copy in the folder beside its own that has
-# this script and is not set aside (.orphaned_at), or, when its own copy is the one set aside (a
-# rollback), to the copy installed now, even a lower one.
-# The newer copy runs in this same process, with the input already read: Claude Code ends a hook by
-# killing its process alone, and a second process (exec is one in Git Bash) outlived both the hook's
-# timeout and its chat (measured with Claude Code 2.1.299, 2026-10-17). Sharing the process is a contract
-# every later version keeps: it runs under an older chat's hooks.json (its events, timeouts, no
-# arguments), and with AISLE_HANDED set it reads no input and hands over to nobody.
-# Each copy is checked once per version on this computer before it is handed anything: it parses, and it
-# knows AISLE_HANDED, since a copy that does not would wait 3 seconds on an input already read. One that
-# fails is passed over for the next one down, and checked again only when its script changes, so a broken
-# release costs nothing per hook and a half-written copy is not kept out for good. After that bash alone
-# looks, one folder listing and a test or two, so an edit pays no program for it.
-# Not the presence worker: a newer copy starts its own, and the old one ends by itself.
-HANDTO=''
-ready() {
-  local f="$1/scripts/listen.sh" v="${1##*/}"
-  [ -s "$f" ] || return 1
-  [ -f "$DATA/handover-ok-$v" ] && return 0
-  [ -f "$DATA/handover-no-$v" ] && [ ! "$f" -nt "$DATA/handover-no-$v" ] && return 1
-  if bash -n "$f" 2>/dev/null && grep -q AISLE_HANDED "$f"; then : > "$DATA/handover-ok-$v"; return 0; fi
-  : > "$DATA/handover-no-$v"
-  [ -f "$DATA/handover-$sid-$v" ] || { : > "$DATA/handover-$sid-$v"; log "passes over the copy of $v: it does not parse, or takes no hand-over (D84)"; }
-  return 1
-}
-handover() {
-  [ -z "$WORKER" ] && [ -z "$AISLE_HANDED" ] && [ -n "$CLAUDE_PLUGIN_ROOT" ] || return 0
-  local re='^([0-9]+)[.]([0-9]+)[.]([0-9]+)$' r="${CLAUDE_PLUGIN_ROOT%/}" name parent b='' v n top=0 best=''
-  name="${r##*[!0-9.]}"
-  [[ $name =~ $re ]] && [[ $VER =~ $re ]] || return 0
-  [ -e "$r/.orphaned_at" ] || top=$((10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]}))
-  parent="${r%"$name"}"
-  # Claude Code spells the folder with forward slashes on Windows too (2.1.299); another spelling has
-  # backslashes, which bash's own pattern matching cannot walk, so they become slashes first.
-  case "$parent" in
-    */) ;;
-    *)
-      [ -s "$DATA/backslash" ] || awk 'BEGIN { printf "%c", 92 }' > "$DATA/backslash"
-      IFS= read -r -d '' b < "$DATA/backslash"
-      parent="${parent//"$b"//}"
-      ;;
-  esac
-  for v in "$parent"*; do
-    [[ ${v##*/} =~ $re ]] || continue
-    n=$((10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]}))
-    [ "$n" -gt "$top" ] && [ "$v" != "$parent$name" ] && [ ! -e "$v/.orphaned_at" ] && ready "$v" || continue
-    top=$n
-    best="$v"
-  done
-  [ -n "$best" ] || return 0
-  v="${best##*/}"
-  [ -f "$DATA/handover-$sid-$v" ] || { : > "$DATA/handover-$sid-$v"; log "runs the listener of $v, the copy installed now, in place of its own $VER (D84)"; }
-  HANDTO="$best"
-}
-handover
-if [ -n "$HANDTO" ]; then
-  AISLE_HANDED="$VER"
-  CLAUDE_PLUGIN_ROOT="$HANDTO"
-  source "$HANDTO/scripts/listen.sh" "$@"
-  exit $?
-fi
 
 # Say something to Claude, but only the first time this session.
 say_once() {
@@ -257,7 +284,7 @@ spell() { printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9._-' '_' | tr -s '_' 
 folder_of() {
   local l n lines
   FO=''
-  slurp "$DATA/spellings"
+  slurp_big "$DATA/spellings"
   case "$NL$SL" in
     *"$NL$1$TAB"*)
       lines_of lines
@@ -285,9 +312,12 @@ stamp() {
 # what a clone's worker last heard, without names (heard.k). It is kept across workers, so that a new one
 # records only what changed (the review's P7), but it holds other people's paths and commit ids, so it
 # too goes 60 days after it was written (the review's R1). And a clone nothing has used for 60 days loses
-# what its worker worked out of this computer's own worktrees: where they are, what each has unmerged,
-# and the co-change table. Its yes, and that its person was told, stay: a later chat is neither asked nor
-# told again.
+# what its worker worked out of this computer's own worktrees: where they are (known, and current, which
+# 0.3.25 kept at first), what each has unmerged, how many were told (counts), which an edit was about to
+# move (edited), and the co-change table; and the scratch folder a worker killed hard left (tmp: its last
+# report, the worktrees it looked at), which as first written stayed for good (the 0.3.26 review's
+# promise:2). No worker runs for such a clone: one ends 12 hours after the clone was last used. Its yes, and
+# that its person was told, stay: a later chat is neither asked nor told again.
 forget_old_records() {
   local cut='' old f
   { [ -d "$DATA/logs" ] || [ -d "$DATA/clones" ]; } || return 0
@@ -303,7 +333,7 @@ forget_old_records() {
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     f="${f%/beat}"
-    rm -rf "$f/w" "$f/warn" "$f/table" "$f/table.head" "$f/table.at" "$f/known" "$f/covered" "$f/base-ref"
+    rm -rf "$f/w" "$f/warn" "$f/table" "$f/table.head" "$f/table.at" "$f/known" "$f/covered" "$f/base-ref" "$f/current" "$f/counts" "$f/edited" "$f/sentwith" "$f/tmp"
   done <<< "$old"
   return 0
 }
@@ -499,8 +529,12 @@ clone_unyes() {
   { [ -n "$CLONE" ] && [ -f "$CLONE/yes" ]; } || return 0
   read -r y < "$CLONE/yes"
   [ "$y" = "${FOLDER##*/}" ] || return 0
-  # The room first forgets what this folder's token told it, at once rather than in 24 hours.
+  # The room first forgets what this folder's token told it, at once rather than in 24 hours; then it holds
+  # nothing under it, so no later stop gives it up again (stop_unheard).
   give_up "$y" "$CLONE"
+  f=''
+  [ -f "$CLONE/sentwith" ] && read -r f < "$CLONE/sentwith"
+  [ "$f" = "$y" ] && rm -f "$CLONE/sentwith"
   # The next folder's yes takes the place of this one's in one rename: a worker that found the clone's
   # yes missing for a moment, between the two, ended (worker_main) or removed the new one (pass).
   for f in "$DATA"/folders/*/answered; do
@@ -561,8 +595,29 @@ stop_here() {
     folder_of "$TOP"
     mkdir -p "$FO" && : > "$FO/stopped"
     clone_unyes
+    stop_unheard
   fi
   yes_index
+}
+# A stop reaches the room through the clone's worker, which names the worktree at its next pass (report).
+# With none running (it ended after 12 hours unused, or for a newer copy), a stop said in a folder that does
+# not hold the clone's yes reached it only once another folder's hook started one, as a stopped folder's
+# hooks start none (covered_here): the server kept that worktree's list until 24 hours after the last report,
+# though the privacy page says at once (the promise check's gap 3, d40). Then the token the clone reports with
+# gives up all it said, now, in the background, and the next worker sends every list again in full, without
+# this worktree. So does the token the room last heard the clone's lists from (sentwith), when the clone's yes
+# moved since and no worker has reported with the new one (the 0.3.26 review's promise:1).
+stop_unheard() {
+  local y='' s='' pid=''
+  [ -n "$CLONE" ] || return 0
+  [ -f "$CLONE/yes" ] && read -r y < "$CLONE/yes"
+  [ -f "$CLONE/sentwith" ] && read -r s < "$CLONE/sentwith"
+  [ -n "$y$s" ] || return 0
+  [ -f "$CLONE/lock/pid" ] && read -r pid < "$CLONE/lock/pid"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
+  [ -n "$y" ] && give_up "$y" "$CLONE"
+  [ -n "$s" ] && [ "$s" != "$y" ] && give_up "$s" "$CLONE"
+  rm -f "$CLONE"/w/*.sent "$CLONE/sentwith"
 }
 
 # Tell the room that folder token $1 holds nothing of clone $2 any more: a report with no worktree in
@@ -591,6 +646,38 @@ older() {
   return 1
 }
 
+# Is this copy set aside (.orphaned_at) with no newer copy installed in its place: a release rolled back
+# (D84)? Claude Code sets the copy before aside at every ordinary update too: on Ofir's PC every copy from
+# 0.3.6 to 0.3.24 has one, written the second the next copy was made. As first written, 0.3.26 took any
+# set-aside copy for a rollback and ended its worker, so at each update the lock was free for a moment, an
+# old chat's next hook started an old worker again, and it ran until a newer chat's hook took it over; and
+# when the newest copy failed its check, the chats that fell back to their own copy had no worker at all
+# (the 0.3.26 review's xver:1 and xver:2). After an update the newer copy's worker takes the lock over
+# (take_over), so the lock is never free. Bash alone, and a folder listing only for a copy set aside.
+rolled_back() {
+  local re='^([0-9]+)[.]([0-9]+)[.]([0-9]+)$' r="${ROOT%/}" name parent b='' v n me
+  [ -e "$r/.orphaned_at" ] || return 1
+  name="${r##*[!0-9.]}"
+  [[ $name =~ $re ]] || return 0
+  me=$((10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]}))
+  parent="${r%"$name"}"
+  # Spelled with backslashes, as handover() may find it.
+  case "$parent" in
+    */) ;;
+    *)
+      [ -s "$DATA/backslash" ] || awk 'BEGIN { printf "%c", 92 }' > "$DATA/backslash"
+      IFS= read -r -d '' b < "$DATA/backslash"
+      parent="${parent//"$b"//}"
+      ;;
+  esac
+  for v in "$parent"*; do
+    [[ ${v##*/} =~ $re ]] || continue
+    n=$((10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]}))
+    [ "$n" -gt "$me" ] && [ ! -e "$v/.orphaned_at" ] && return 1
+  done
+  return 0
+}
+
 # The clone's worker: started if it is not running, and told the clone is still in use. Any hook in a
 # folder of the clone does this; the worker ends by itself 12 hours after the last one.
 worker_up() {
@@ -598,6 +685,9 @@ worker_up() {
   [ -n "$CLONE" ] || return 0
   recently_gone && return 0
   resting && return 0
+  # A copy rolled back (D84) starts no worker: one would end at its first look (plugin_gone). A copy set
+  # aside by an update does: a chat falls back to it only when the newer copy fails its check (ready).
+  rolled_back && return 0
   # Never before its person was told what it shares (above NEWS_LINE).
   [ -f "$CLONE/told" ] || return 0
   [ -d "$CLONE" ] || mkdir -p "$CLONE" || return 0
@@ -609,12 +699,14 @@ worker_up() {
   : 2>/dev/null > "$CLONE/beat"
   [ -f "$CLONE/lock/pid" ] && read -r pid < "$CLONE/lock/pid"
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    # A worker from an older copy of the plugin ends at its next look, and the next hook starts this one.
-    # Never a newer one: chats opened before an update run the old copy, and the two stopped each
-    # other's worker in turn (the review's P7).
+    # A worker from an older copy of the plugin ends at its next look, and this copy's worker, started
+    # now, takes its lock over at once (worker_main), unless one does already. Never a newer one: chats
+    # opened before an update run the old copy, and the two stopped each other's worker in turn (the
+    # review's P7).
     [ -f "$CLONE/lock/ver" ] && read -r v < "$CLONE/lock/ver"
-    older "$v" "${VER:-0.0.0}" && : 2>/dev/null > "$CLONE/lock/stop"
-    return 0
+    older "$v" "${VER:-0.0.0}" || return 0
+    : 2>/dev/null > "$CLONE/lock/stop"
+    [ -d "$CLONE/lock/take" ] && return 0
   fi
   # Detached twice, so no pipe of this hook stays open (Claude Code would wait on it), and this hook
   # ending, or being stopped, does not end the worker.
@@ -840,7 +932,7 @@ active() {
 # pass gathers goes into COVERED, INDEX, WTS, ACTS and CURRENT, each written once after the pass (pass),
 # and the worktrees that said stop into STOPS, for the report.
 one_worktree() {
-  local w="$1" L line head='' mb key='' st='' seen='' was='' hash='' qhash='' more='' made='' OWN=''
+  local w="$1" L line head='' mb key='' st='' seen='' was='' hash='' qhash='' more='' made='' OWN='' sn
   MOVED=''
   [ -d "$w" ] || return 0
   known "$w" || return 0
@@ -868,17 +960,25 @@ one_worktree() {
     [ -f "$L" ] || return 0
     [ -f "$L.k" ] && read -r head mb < "$L.k"
   else
-    git --no-optional-locks -C "$w" -c core.quotePath=off status --porcelain=v2 --branch --no-renames -uno --ignore-submodules > "$TMP/st" 2>/dev/null || return 0
-    slurp "$TMP/st"
-    st="$SL"
+    # Straight from git: bash reads what a program prints in blocks, on every bash, and this starts no
+    # process more than the git. Written out for listed() only when the list is made again.
+    st=$(git --no-optional-locks -C "$w" -c core.quotePath=off status --porcelain=v2 --branch --no-renames -uno --ignore-submodules 2>/dev/null) || return 0
     line="${st%%"$NL"*}"
     head="${line#"# branch.oid "}"
     { [ "$head" != "$line" ] && [ "$head" != "(initial)" ]; } || return 0
     # This copy's own last look ("$L.sn"), which 0.3.24 never writes: a move only a 0.3.24 pass saw is
-    # still a move here, and "$L.f" is made again. "$L.seen" when there is none yet (just upgraded).
-    slurp "$L.sn"
-    [ -n "$SL" ] || slurp "$L.seen"
-    seen="$SL"
+    # still a move here, and "$L.f" is made again. "$L.seen" when there is none yet (just upgraded). Read
+    # once in a worker's life and then kept in memory with it, as "=" and the look, so a quiet pass reads
+    # no note at all: on a bash older than 5.2 each read of one forks (slurp).
+    sn="AISLE_SN_$WID"
+    seen="${!sn}"
+    if [ -n "$seen" ]; then seen="${seen#=}"
+    else
+      slurp "$L.sn"
+      [ -n "$SL" ] || slurp "$L.seen"
+      seen="$SL"
+      printf -v "$sn" '=%s' "$seen"
+    fi
     # The worktree itself moved, not just the base or its upstream: a file changed, was deleted, was
     # staged. Then when it last moved is this pass (active); a commit or a checkout moves its head.
     was="${seen#*"$NL"}"
@@ -893,6 +993,7 @@ one_worktree() {
         mv -f "$TMP/c" "$L.c"
         keep "$L.k" "$head $base"
       fi
+      printf '%s%s' "$st" "$NL" > "$TMP/st"
       listed "$L.c" "$TMP/st" "$TMP/q" "$TMP/f" > "$TMP/list" || return 0
       mv -f "$TMP/f" "$L.f"
       if same_file "$TMP/list" "$L" && [ -f "$L.q" ]; then
@@ -911,6 +1012,7 @@ one_worktree() {
       # its own and does not list every worktree again.
       keep "$L.seen" "$base$NL$st$NL"
       keep "$L.sn" "$base$NL$st"
+      printf -v "$sn" '=%s' "$base$NL$st"
     fi
   fi
   # Halfway through a merge the notes are kept as they are, and their hashes worked out for this pass.
@@ -1012,8 +1114,8 @@ report() {
   code=$(curl -sS -m 20 -A "aisle-plugin/${VER:-0.0.0}" -o "$TMP/answer" -w '%{http_code}' -H "@$DATA/folders/$yes/header" -H 'Content-Type: text/tab-separated-values' -H "If-None-Match: ${etag:--}" --data-binary "@$TMP/report" "${U%/watch}/presence" 2>/dev/null)
   case "$code" in
     200|304)
-      # The token the room now holds this clone's lists under.
-      SENTWITH="$yes"
+      # The token the room now holds this clone's lists under, kept in the clone's notes too (sentwith).
+      [ "$SENTWITH" = "$yes" ] || { SENTWITH="$yes"; put "$c/sentwith" "$yes"; }
       # The room has every list sent in full now.
       while IFS="$TAB" read -r wt hash; do keep "$c/w/$wt.sent" "$hash"; done < "$TMP/full"
       if [ "$code" = 200 ]; then
@@ -1224,8 +1326,9 @@ pass() {
   if [ ! -s "$DATA/folders/$yes/token" ]; then rm -f "$c/yes"; return 0; fi
   header_of "$DATA/folders/$yes"
   # The yes moved to another folder of the clone: the token reported with before gives its lists up,
-  # or the room hears every worktree twice for a day, the stopped one too.
-  if [ -n "$SENTWITH" ] && [ "$SENTWITH" != "$yes" ]; then give_up "$SENTWITH" "$c"; SENTWITH=''; fi
+  # or the room hears every worktree twice for a day, the stopped one too. Also when it moved while no
+  # worker ran: the token comes from the clone's notes then (worker_main).
+  if [ -n "$SENTWITH" ] && [ "$SENTWITH" != "$yes" ]; then give_up "$SENTWITH" "$c"; SENTWITH=''; rm -f "$c/sentwith"; fi
   if [ ! -d "$common" ] || ! git -C "$common" worktree list --porcelain > "$TMP/wl" 2>/dev/null; then
     log "presence: the clone at $common is gone; asked again in a day"
     stamp
@@ -1301,7 +1404,7 @@ pass() {
   # before, when it had a base, are given up. So does a clone with no commit yet, which went round every
   # pass, a few git programs each time, for 12 hours after its last use (the second fix check).
   if [ -z "$base" ] || [ -n "$shallow" ] || [ -z "$repo" ]; then
-    for f in "$c"/w/*.sent; do [ -f "$f" ] && { give_up "$yes" "$c"; rm -f "$c"/w/*.sent; break; }; done
+    for f in "$c"/w/*.sent; do [ -f "$f" ] && { give_up "$yes" "$c"; rm -f "$c"/w/*.sent "$c/sentwith"; break; }; done
     stamp
     keep "$c/rest" "$NOW"
     if [ -n "$shallow" ]; then f='a shallow clone'; elif [ -z "$repo" ]; then f='no commit yet'; else f='no base branch'; fi
@@ -1341,18 +1444,20 @@ pass() {
 }
 
 # What the room said of the others, their names with it, is kept only while the worker runs: when it
-# ends, for whatever reason, it goes, and the next worker asks the room afresh.
+# ends, for whatever reason, it goes, and the next worker asks the room afresh. So does what a pass heard
+# and has not kept yet (tmp/heard, its names too, and tmp/heard.k): a worker killed hard leaves its scratch
+# folder, and as first written they stayed past the next chat start (the 0.3.26 review's promise:2).
 forget_heard() {
   local f gone=()
   for f in "$c"/warn/*; do [ -f "$f" ] && [ "${f##*/}" != index ] && gone+=("$f"); done
-  rm -f "$c/answer" "$c/etag" "$c/warn/.made" "$c/tmp/answer" "${gone[@]}"
+  rm -f "$c/answer" "$c/etag" "$c/warn/.made" "$c/tmp/answer" "$c/tmp/heard" "$c/tmp/heard.k" "${gone[@]}"
 }
 # And for a clone whose worker was killed hard and that may never be used again: it goes once no
 # worker runs for it (a worker being started has its lock and no pid yet, and is left alone).
 forget_stale() {
   local c pid
   for c in "$DATA"/clones/*; do
-    { [ -f "$c/answer" ] || [ -s "$c/tmp/answer" ]; } || continue
+    { [ -f "$c/answer" ] || [ -s "$c/tmp/answer" ] || [ -f "$c/tmp/heard" ] || [ -f "$c/tmp/heard.k" ]; } || continue
     pid=''
     if [ -d "$c/lock" ]; then
       [ -f "$c/lock/pid" ] && read -r pid < "$c/lock/pid"
@@ -1385,6 +1490,11 @@ plugin_gone() {
   local m='' v='' s='' re
   GONE=''
   [ -f "$SELF" ] || { GONE='the plugin was removed'; return 0; }
+  # Rolled back (D84): every hook now runs the copy installed now, a lower one, and its worker_up starts
+  # that copy's worker. As first written, a worker of a newer copy rolled back went on telling the room for
+  # as long as the clone was in use (the combo review's merge:0). A copy set aside by an update keeps its
+  # worker until the newer copy's takes the lock over (rolled_back).
+  rolled_back && { GONE='this copy of the plugin was set aside, and no newer copy is installed (a rollback)'; return 0; }
   slurp "$ROOT/.claude-plugin/plugin.json"
   m="$SL"
   re='"version" *: *"([^"]*)"'
@@ -1395,6 +1505,62 @@ plugin_gone() {
   s="$SL"
   re="$q${PKEY//./[.]}$q *: *false"
   [[ $s =~ $re ]] && { GONE='the plugin was switched off'; return 0; }
+  return 1
+}
+
+# A worker from an older copy of the plugin holds the clone's lock, pid $1, told to stop by a hook of this
+# copy (worker_up): this worker takes the lock over while the old one still runs, and starts once it has
+# ended, at its next look. An old worker's exit removes the lock only when it is still its own, so the
+# lock is never free in between, and a hook of a chat still on the older copy, which starts a worker of
+# its own whenever the lock is free, finds this one in it and starts none. As first written, the lock was
+# free for a moment when the old worker ended, the old chat's next hook started an old worker again, and
+# a computer where an old chat was in use kept the old worker and its CPU cost (the combo review's
+# upgrade:1). One worker takes over ("take"), and goes when the clone stops saying yes; fails, starting
+# nothing, otherwise. It looks every second for as long as the old one's longest pass, its table and its
+# sleep, counted in its own seconds of sleep, not by the clock. It first gave up by bash's SECONDS, which
+# counts the time a computer sleeps: a takeover begun just before the lid closed was past its time on
+# waking, took the stop away before the old worker had seen it, and both ran and reported until the clone
+# was unused for 12 hours (the 0.3.26 review's shells:1). And past that time it does not give up while the
+# old pid is still a worker of this clone (a pass longer still: 0.3.25 took 233 s a pass over a worktree with
+# 3,000 files not committed, on bash 5.2), only after an hour more of looks, every 10 s: one that has not
+# ended by then is stuck.
+take_over() {
+  local old="$1" v='' p='' turns looks=360
+  [ -f "$c/lock/ver" ] && read -r v < "$c/lock/ver"
+  { [ -n "$v" ] && older "$v" "${VER:-0.0.0}"; } || return 1
+  mkdir "$c/lock/take" 2>/dev/null || return 1
+  : 2>/dev/null > "$c/lock/stop"
+  echo $$ > "$c/lock/pid"
+  printf '%s' "${VER:-0.0.0}" > "$c/lock/ver"
+  log "presence: worker $$ takes the lock over from worker $old of the plugin's $v, and starts once that one ends"
+  turns=$(( 5 * every + TABLE_SECONDS + ${AISLE_LONGEST_PASS:-300} ))
+  while kill -0 "$old" 2>/dev/null; do
+    if [ ! -f "$c/yes" ] || [ ! -s "$c/common" ]; then
+      [ -f "$c/lock/pid" ] && read -r p < "$c/lock/pid"
+      [ "$p" = "$$" ] && rm -rf "$c/lock"
+      exit 0
+    fi
+    if [ "$turns" -gt 0 ]; then turns=$(( turns - 1 )); sleep 1
+    elif ! a_worker "$old"; then break
+    elif [ "$looks" -gt 0 ]; then looks=$(( looks - 1 )); sleep 10
+    else
+      log "presence: worker $old of the plugin's $v has not ended an hour past its longest pass, so worker $$ starts anyway"
+      break
+    fi
+  done
+  rm -rf "$c/lock/stop" "$c/lock/take"
+}
+# Is pid $1 still a worker of this clone: its command line listen.sh's --worker with this clone's notes? A
+# pid goes to another program once its own has ended. /proc in Git Bash and on Linux, read in one block:
+# bash drops the NUL that ends each word (and its warning that it did), and the words run together, which
+# the test below still finds. ps elsewhere (a Mac). A command line that cannot be read counts as a
+# worker's: it is looked at again 10 s later, and the hour's limit stays.
+a_worker() {
+  local a=''
+  if [ -r "/proc/$1/cmdline" ]; then { a=$(<"/proc/$1/cmdline"); } 2>/dev/null
+  else a=$(ps -p "$1" -o args= 2>/dev/null); fi
+  [ -n "$a" ] || return 0
+  case "$a" in *--worker*"$CID"*) return 0 ;; esac
   return 1
 }
 
@@ -1409,12 +1575,14 @@ worker_main() {
   [ -s "$c/common" ] || exit 0
   if ! mkdir "$c/lock" 2>/dev/null; then
     [ -f "$c/lock/pid" ] && read -r pid < "$c/lock/pid"
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then exit 0; fi
-    # A lock with no worker behind it was left by one that was killed. One being taken right now has no
-    # pid in it yet, for a moment, so a lock without one is left alone until it is a minute old.
-    if [ -z "$pid" ] && [ -z "$(find "$c/lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then exit 0; fi
-    rm -rf "$c/lock"
-    mkdir "$c/lock" 2>/dev/null || exit 0
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then take_over "$pid" || exit 0
+    else
+      # A lock with no worker behind it was left by one that was killed. One being taken right now has no
+      # pid in it yet, for a moment, so a lock without one is left alone until it is a minute old.
+      if [ -z "$pid" ] && [ -z "$(find "$c/lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then exit 0; fi
+      rm -rf "$c/lock"
+      mkdir "$c/lock" 2>/dev/null || exit 0
+    fi
   fi
   echo $$ > "$c/lock/pid"
   printf '%s' "${VER:-0.0.0}" > "$c/lock/ver"
@@ -1423,11 +1591,21 @@ worker_main() {
   # nothing is left in the system's temp folder, where nobody would look again (the review's P2).
   forget_heard
   TMP="$c/tmp"
+  # The token the room holds this clone's lists under, as the last worker left it: when the clone's yes
+  # moved while no worker ran, the first pass gives that token's lists up. As first written, a new worker
+  # started with none, and the first token's lists, a worktree stopped since with them, stayed in the room
+  # until 24 hours after its last report (the 0.3.26 review's promise:1).
   SENTWITH=''
+  [ -f "$c/sentwith" ] && read -r SENTWITH < "$c/sentwith"
   FORGOT=-
   rm -rf "$TMP"
   mkdir "$TMP" || exit 0
-  trap 'rm -rf "$TMP"; forget_heard; [ "$(cat "$c/lock/pid" 2>/dev/null)" = "$$" ] && rm -rf "$c/lock"' EXIT
+  # Only in the worker itself. A job of its own killed at once after its fork, before its program starts
+  # (the table's time limit, waited), runs this trap too, where $$ is still the worker's pid: it took the
+  # live worker's lock, its scratch folder and what it heard away, and another worker started beside it
+  # (found by the 0.3.26 final check; 20 kills in 20 on Git Bash 5.3). BASHPID is the process's own pid,
+  # in bash 4 and newer; macOS's 3.2 has none, and its fork is a real one, microseconds before the program.
+  trap '[ "${BASHPID:-$$}" != "$$" ] || { rm -rf "$TMP"; forget_heard; [ "$(cat "$c/lock/pid" 2>/dev/null)" = "$$" ] && rm -rf "$c/lock"; }' EXIT
   log "presence: worker $$ started for $(cat "$c/common")"
   # Which copy of the plugin this worker is, in the record: a newer one may start on the same day.
   record "clone-$CID" version "${VER:-0.0.0}"
@@ -1438,12 +1616,12 @@ worker_main() {
       # so already; once more costs nothing). A clone that says yes again later starts its record of
       # what it heard afresh.
       give_up "$SENTWITH" "$c"
-      rm -f "$c/heard.k"
+      rm -f "$c/heard.k" "$c/sentwith"
       log "presence: worker $$ ends: the clone does not say yes"
       exit 0
     fi
     # Nothing is sent before the person has been told what it shares (above NEWS_LINE).
-    if [ ! -f "$c/told" ]; then give_up "$SENTWITH" "$c"; log "presence: worker $$ ends: its person has not been told what it shares"; exit 0; fi
+    if [ ! -f "$c/told" ]; then give_up "$SENTWITH" "$c"; rm -f "$c/sentwith"; log "presence: worker $$ ends: its person has not been told what it shares"; exit 0; fi
     if [ -f "$c/lock/stop" ]; then log "presence: worker $$ ends: a newer copy of the plugin takes over"; exit 0; fi
     if plugin_gone; then log "presence: worker $$ ends: $GONE"; exit 0; fi
     if [ ! -f "$c/beat" ] || [ -n "$(find "$c/beat" -mmin +"$idle" 2>/dev/null)" ]; then
@@ -1518,8 +1696,12 @@ worktree_of() {
   for k in "$DATA"/clones/*/known; do
     { [ -f "$k" ] && [ -f "${k%/known}/yes" ]; } || continue
     d="${k%/known}"
-    [ -f "$d/current" ] && k="$d/current"
-    slurp "$k"
+    # "current" only when "known" is not newer: a worker of 0.3.24 adds a worktree it finds to "known" and
+    # never writes "current", and an edit in a worktree made while one ran was matched to none (the combo
+    # review's upgrade:2). This copy's pass adds a worktree to both, "current" last. A worktree since
+    # removed is still kept out by the .git test below.
+    [ -f "$d/current" ] && [ ! "$k" -nt "$d/current" ] && k="$d/current"
+    slurp_big "$k"
     lines_of rows
     for l in "${rows[@]}"; do
       p="${l%%"$TAB"*}"
@@ -1836,7 +2018,11 @@ if [ "$event" = "PreToolUse" ]; then
   if [[ $input =~ $re ]]; then
     stop_here || exit 0
     log "listening turned off for $dir"
-    reason="Done, and not an error: the AIsle plugin turned listening off for this folder on this computer, so no chat here will be woken, and this worktree no longer tells the room which files it has unmerged. The room did not need to be contacted. Tell your user in one line."
+    # Not "the room did not need to be contacted", as it said from D28 on: since presence (0.3.7) a stop in a
+    # clone that told the room what it has unmerged reaches the room, by the worker's next pass or at once in
+    # the background (stop_unheard, clone_unyes), and the person was told nothing was sent (the 0.3.26
+    # review's promise:3).
+    reason="Done, and not an error: the AIsle plugin turned listening off for this folder on this computer, whatever room was named, so no chat here will be woken for any room, and this worktree no longer tells the room which files it has unmerged. If it had told the room, the plugin now tells the room to forget it, by itself, in the background; nothing else is needed. Tell your user in one line."
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}' "$reason"
     exit 0
   fi
@@ -1949,7 +2135,7 @@ if [ "$event" = "PostToolUse" ]; then
         role=$(cat "$FOLDER/role" 2>/dev/null)
         if [ -n "$h" ] && [ "$role" = reporter ]; then where="the room listens through another folder of yours, so no chat here is woken"
         elif [ -n "$h" ] && [ "$h" = "$sid" ]; then where="this chat is the one that listens in this folder ✓"
-        elif [ -n "$h" ]; then where="another chat in this folder listens, not this one. A new chat opened here takes it over when it starts"
+        elif [ -n "$h" ]; then where="another chat in this folder listens, not this one. A new chat opened here takes that chat's listening over when it starts"
         elif [ -f "$FOLDER/answered" ]; then where="no chat in this folder listens ✗. Fix: say listen here in this chat"
         elif [ -n "$covered" ]; then where="no chat in this folder listens; its clone said yes in another folder. To be woken here too, say listen here in this chat"
         else where="this folder chose not to listen. To turn it on, say listen here in this chat"; fi
@@ -1998,8 +2184,9 @@ fi
 
 # Notes from 0.1.0 are left alone: chats started before an update keep running the old copy until they
 # restart, and removing its "already said" markers made them ask again (seen 2026-09-19).
-# A week-old session's notes are of no use to anyone.
-for pattern in 'after-*' 'said-*' 'pid-*' 'handover-*'; do find "$DATA" -maxdepth 1 -type f -name "$pattern" -mtime +7 -delete 2>/dev/null; done
+# A week-old session's notes are of no use to anyone. A copy passed over 10 minutes ago is checked again
+# (see ready). One find for all of it, as each program costs 50 to 200 ms in Git Bash.
+find "$DATA" -maxdepth 1 -type f '(' '(' -name 'after-*' -o -name 'said-*' -o -name 'pid-*' -o -name 'handover-*' ')' -mtime +7 -o -name 'handover-no-*' -mmin +10 ')' -delete 2>/dev/null
 forget_stale
 forget_old_records
 

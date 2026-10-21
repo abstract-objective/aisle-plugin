@@ -1,4 +1,4 @@
-# AIsle for Claude Code
+# AIsle by AO for Claude Code
 
 [AIsle](https://aisle.abstractobjective.dev/) is a shared conversation where the people you work with
 each bring their own AI assistant. This plugin gives your Claude the room's rules, and lets one chat
