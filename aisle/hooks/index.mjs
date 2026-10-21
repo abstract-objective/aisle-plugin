@@ -2,10 +2,12 @@
 // second, measured 2026-10-08), so every feature is registered here, each from its own file: the self-update
 // (D48, update.mjs), the way back after a restart (D56, reopen.mjs) and "no AIsle tools here" (D69, link.mjs).
 // Each draws its own strip above the chat box and passes to the next when it has nothing to show, in that
-// order, so a chat never shows more than one of them at a time.
+// order, so a chat never shows more than one of them at a time. A fourth draws nothing: each chat's own read
+// mark (job d23, chat-mark.mjs) names the chat in AIsle's read_chat and whoami.
 import { register as registerUpdate } from './update.mjs';
 import { register as registerReopen } from './reopen.mjs';
 import { register as registerLink } from './link.mjs';
+import { register as registerChatMark } from './chat-mark.mjs';
 
 export const register = (on, options) => {
   registerUpdate(on, options);
@@ -19,5 +21,10 @@ export const register = (on, options) => {
     registerLink(on, options);
   } catch {
     // This chat has no "no AIsle tools" strip; the skill's own line still says it.
+  }
+  try {
+    registerChatMark(on, options);
+  } catch {
+    // This chat reads from its connection's mark, as every chat did before d23.
   }
 };

@@ -2186,7 +2186,7 @@ fi
 # restart, and removing its "already said" markers made them ask again (seen 2026-09-19).
 # A week-old session's notes are of no use to anyone. A copy passed over 10 minutes ago is checked again
 # (see ready). One find for all of it, as each program costs 50 to 200 ms in Git Bash.
-find "$DATA" -maxdepth 1 -type f '(' '(' -name 'after-*' -o -name 'said-*' -o -name 'pid-*' -o -name 'handover-*' ')' -mtime +7 -o -name 'handover-no-*' -mmin +10 ')' -delete 2>/dev/null
+find "$DATA" -maxdepth 1 -type f '(' '(' -name 'after-*' -o -name 'said-*' -o -name 'pid-*' -o -name 'handover-*' -o -name 'named-*' ')' -mtime +7 -o -name 'handover-no-*' -mmin +10 ')' -delete 2>/dev/null
 forget_stale
 forget_old_records
 
@@ -2333,12 +2333,25 @@ esac
 
 after_file="$DATA/after-$sid"
 after=$(cat "$after_file" 2>/dev/null)
+# This chat's name in the room (job d23), read from the file the hooks module writes once it names this chat in
+# read_chat (hooks/chat-mark-rules.mjs namedFileOf): 32 hex of sha256("aisle-chat:" and the session id), never the
+# id. The room then counts news for this chat from what it read itself, so a worker chat's read no longer leaves it
+# a wake with nothing to read, nor its own read in its turn. Only from that file: a chat whose reads go unnamed (an
+# older module whose listener was handed to this copy, D84, or a tool list from before the room's d23) must not be
+# given a place of its own, or its first named read would hold again everything it read meanwhile (the d23
+# review's finding 2). Read on every poll, with builtins only, since the module may name the chat at any time.
+named_file="$DATA/named-$sid"
 log "start ($event, pid $$) for $dir"
 down=''
 while true; do
   heartbeat
+  chat=''
+  [ -f "$named_file" ] && { IFS= read -r chat < "$named_file" || :; }
+  case "$chat" in *[!0-9a-f]*) chat='' ;; esac
+  [ "${#chat}" -eq 32 ] || chat=''
   qs=''
   [ -n "$after" ] && qs="?after=$after"
+  [ -n "$chat" ] && qs="${qs:-?}${qs:+&}chat=$chat"
   code=$(curl -sS -m 40 -A "aisle-plugin/${VER:-0.0.0}" -o "$F" -w '%{http_code}' -H "@$HEADER_FILE" "$U$qs" 2>/dev/null)
   # The person may have picked another chat meanwhile. Then this one stops, and says nothing.
   if ! mine; then log "stop: another chat listens for $dir now"; exit 0; fi
