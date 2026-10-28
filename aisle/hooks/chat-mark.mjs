@@ -7,6 +7,7 @@
 // runs no program and changes no setting. It writes one file, in the plugin's own data folder: `named-<session>`,
 // which tells this chat's listener (listen.sh) to name the chat to the room too, from then on.
 import { CHAT_TOOLS, takesChat, anyTakesChat, chatIdOf, withChat, namedFileOf } from './chat-mark-rules.mjs';
+import { computerAtTurn } from './computer.mjs';
 
 /** Tell this chat's listener that its reads are named, once: the file holds the chat's 32 hex. Never throws. */
 async function tellListener($, sessionId, chat) {
@@ -61,6 +62,8 @@ export const register = (on) => {
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e);
     await atTurn($);
+    // And its computer (D124, computer.mjs): one turn.start for both, as the engine takes only one with no matcher.
+    await computerAtTurn($);
     return next(e);
   }).catch(($, e, next) => next(e));
 };

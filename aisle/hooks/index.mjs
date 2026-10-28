@@ -3,11 +3,17 @@
 // (D48, update.mjs), the way back after a restart (D56, reopen.mjs) and "no AIsle tools here" (D69, link.mjs).
 // Each draws its own strip above the chat box and passes to the next when it has nothing to show, in that
 // order, so a chat never shows more than one of them at a time. A fourth draws nothing: each chat's own read
-// mark (job d23, chat-mark.mjs) names the chat in AIsle's read_chat and whoami.
+// mark (job d23, chat-mark.mjs) names the chat in AIsle's read_chat and whoami. A fifth draws nothing either: each
+// computer's own identity (D124, job f23, computer.mjs) names the computer, and the chat, in post_message and listen_here.
 import { register as registerUpdate } from './update.mjs';
 import { register as registerReopen } from './reopen.mjs';
 import { register as registerLink } from './link.mjs';
 import { register as registerChatMark } from './chat-mark.mjs';
+import { register as registerComputer } from './computer.mjs';
+// D126's keep rule finds a chat's known goal in keep.mjs (job kg9). Named here only, inert: this module does not load
+// it (so nothing in it can stop the self-update loading), nothing below calls it, hooks.json names nothing of it, and
+// `wired` stays false until job kg4 switches the rule on (research/d126-keep-going/kg9-plan.md).
+export const KEEP_MODULE = Object.freeze({ file: './keep.mjs', wired: false });
 
 export const register = (on, options) => {
   registerUpdate(on, options);
@@ -26,5 +32,10 @@ export const register = (on, options) => {
     registerChatMark(on, options);
   } catch {
     // This chat reads from its connection's mark, as every chat did before d23.
+  }
+  try {
+    registerComputer(on, options);
+  } catch {
+    // This chat's posts name no computer, which the room takes as every post before D124.
   }
 };

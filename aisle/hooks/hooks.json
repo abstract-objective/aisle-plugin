@@ -55,7 +55,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "mcp__.*__(listen_here|whoami|read_chat|post_message)",
+        "matcher": "mcp__.*__(listen_here|whoami|read_chat|post_message|read_plan|estimate)",
         "hooks": [
           {
             "type": "command",
