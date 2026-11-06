@@ -1,7 +1,7 @@
 // "No AIsle tools here" (D69 step 2, plugin 0.3.12). When a chat opens with the AIsle plugin and none of AIsle's
 // tools, one strip above the chat box says so and gives the one step: Link your Claude, the fast start's own
 // link. Never more than one strip in a chat, never when AIsle's tools are here, and Not now quiets it on this
-// computer for a week. It goes by itself once AIsle's tools are there.
+// computer for a week. It goes by itself once AIsle's tools are there. It ends with the one help line (job cs1).
 // How it tells is in link-rules.mjs: `$.tool.list()`, not verified on Ofir's PCs (R21 findings 2b), so an
 // answer it cannot trust shows nothing and the skill's own no-tools line stays the way back.
 // A hooks module, like update.mjs and reopen.mjs: no Node, `h` is the element factory and `$` reaches everything
@@ -9,7 +9,11 @@
 // key; it reaches no network, runs no program and changes no setting.
 import {
   LINK_CLAUDE, LINK_LABEL, FIRST_LOOK_MS, SURE_AFTER_MS, RECHECK_MS, lookAt, quiet, missingLine, afterLine,
+  HELP_DOCS, DOCS_LABEL, helpLine,
 } from './link-rules.mjs';
+
+/** The help line around its docs link (job cs1): "Stuck? Read " and " or write to … (we answer within 30 days)." */
+const [helpBefore, helpAfter] = helpLine.split(HELP_DOCS);
 
 /** When Not now was pressed, for every chat on this computer. */
 const HIDDEN_AT = 'linkHiddenAt';
@@ -100,7 +104,8 @@ export const register = (on) => {
     const { Box, Button, Link, Text } = $.ui.resolve(e);
     return h(Box, null,
       // A Link is inline: it sits inside the Text, between its words.
-      h(Text, null, `${missingLine} `, h(Link, { href: LINK_CLAUDE, label: LINK_LABEL }), `${afterLine} `),
+      h(Text, null, `${missingLine} `, h(Link, { href: LINK_CLAUDE, label: LINK_LABEL }), `${afterLine} ${helpBefore}`,
+        h(Link, { href: HELP_DOCS, label: DOCS_LABEL }), `${helpAfter} `),
       h(Button, { key: 'aisle-link-later', label: 'Not now', role: 'dismiss', onPress: () => notNow($) }));
   });
 };

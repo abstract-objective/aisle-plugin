@@ -70,3 +70,12 @@ export const missingLine = 'AIsle: this chat has no AIsle tools. One step:';
 
 /** After the link: a connector reaches the chats that start after it, in every folder. */
 export const afterLine = ', then start a new chat.';
+
+/**
+ * Last, the one help line (job cs1): engine/aisle/help.mjs's HELP_LINE, which a plugin file cannot import, since the
+ * plugin is installed without the repo around it. test/cs1-help.test.mjs holds this copy to it, word for word. The
+ * strip shows the docs as a link with the words the site's pages give it.
+ */
+export const HELP_DOCS = 'https://abstractobjective.dev/aisle/docs/';
+export const DOCS_LABEL = 'the docs';
+export const helpLine = `Stuck? Read ${HELP_DOCS} or write to abstractobjective.dev@gmail.com (we answer within 30 days).`;

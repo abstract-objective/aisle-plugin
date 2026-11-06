@@ -5,11 +5,16 @@
 // order, so a chat never shows more than one of them at a time. A fourth draws nothing: each chat's own read
 // mark (job d23, chat-mark.mjs) names the chat in AIsle's read_chat and whoami. A fifth draws nothing either: each
 // computer's own identity (D124, job f23, computer.mjs) names the computer, and the chat, in post_message and listen_here.
+// A sixth, run from those two, draws nothing: it writes which of the chat's servers are AIsle's, so listen.sh lets AIsle's
+// four reads run with no prompt there alone (D161, job d161h, allow.mjs). A seventh draws last: the one yes (job su3,
+// auto-update.mjs), asked once per computer, which on yes turns on Claude Code's own plugin updates for AIsle in the
+// person's user settings, so the plugin stays current with no AIsle code in the loop.
 import { register as registerUpdate } from './update.mjs';
 import { register as registerReopen } from './reopen.mjs';
 import { register as registerLink } from './link.mjs';
 import { register as registerChatMark } from './chat-mark.mjs';
 import { register as registerComputer } from './computer.mjs';
+import { register as registerAutoUpdate } from './auto-update.mjs';
 // D126's keep rule finds a chat's known goal in keep.mjs (job kg9). Named here only, inert: this module does not load
 // it (so nothing in it can stop the self-update loading), nothing below calls it, hooks.json names nothing of it, and
 // `wired` stays false until job kg4 switches the rule on (research/d126-keep-going/kg9-plan.md).
@@ -37,5 +42,10 @@ export const register = (on, options) => {
     registerComputer(on, options);
   } catch {
     // This chat's posts name no computer, which the room takes as every post before D124.
+  }
+  try {
+    registerAutoUpdate(on, options);
+  } catch {
+    // This computer is not asked; the self-update above keeps the plugin current by itself.
   }
 };

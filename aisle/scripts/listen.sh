@@ -3,7 +3,12 @@
 # tells them apart by the event name in the hook's input:
 #
 #   PreToolUse, listen_here    fills in this folder's listener fingerprint, so Claude never handles it;
-#                              "stop" instead turns listening off here, without reaching the room
+#                              "stop" instead makes this chat quiet, and "off" turns listening off for this
+#                              folder (D187), neither reaching the room
+#   PreToolUse, whoami, read_chat, read_plan, estimate
+#                              lets these four reads run with no prompt (D161), only on a server the hooks
+#                              module named AIsle's (servers-<session>); once that file is there, listen_here
+#                              is filled only on such a server too. post_message and get_skill stay asked
 #   PostToolUse, listen_here   makes this chat the one that listens for this folder
 #   PostToolUse, whoami, read_chat, post_message, read_plan, estimate
 #                              asks once per folder whether to listen (D38); whoami gets this computer's
@@ -49,7 +54,10 @@
 # have eaten them before. It needs bash, curl, git, grep, cut, tr, sed, head, awk, base64 and a SHA-256
 # tool, which Git Bash, macOS and Linux all have.
 
-U="${AISLE_WATCH_URL:-https://aisle.abstractobjective.dev/watch}"
+# The room's own address, and the one this chat uses. UDEF is fixed here, never read from the environment: the
+# backfill (f37b) sends a folder's credential only to its own address, and one that kept none is on UDEF.
+UDEF='https://aisle.abstractobjective.dev/watch'
+U="${AISLE_WATCH_URL:-$UDEF}"
 DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.aisle-plugin}"
 LOG="$DATA/listener.log"
 SELF="${BASH_SOURCE[0]:-$0}"
@@ -155,6 +163,8 @@ log() {
 # the copy installed now, starts that copy's.
 HANDTO=''
 HANDFROM=''
+HANDN=0
+HANDME=0
 ready() {
   local f="$1/scripts/listen.sh" v="${1##*/}" t
   [ -s "$f" ] || return 1
@@ -173,7 +183,8 @@ handover() {
   name="${r##*[!0-9.]}"
   [[ $name =~ $re ]] || return 0
   HANDFROM="$name"
-  [ -e "$r/.orphaned_at" ] || top=$((10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]}))
+  HANDME=$((10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]}))
+  [ -e "$r/.orphaned_at" ] || top=$HANDME
   parent="${r%"$name"}"
   # Claude Code spells the folder with forward slashes on Windows too (2.1.299); another spelling has
   # backslashes, which bash's own pattern matching cannot walk, so they become slashes first.
@@ -196,9 +207,19 @@ handover() {
   v="${best##*/}"
   [ "$event" = PreToolUse ] || [ -f "$DATA/handover-$sid-$v" ] || { : > "$DATA/handover-$sid-$v"; log "runs the listener of $v, the copy installed now, in place of its own $name (D84)"; }
   HANDTO="$best"
+  HANDN=$top
 }
 handover
 if [ -n "$HANDTO" ]; then
+  # D161's four reads go to no copy older than this one (the d161h review, 2026-11-01). This chat's hooks.json
+  # sends them, and a copy from before D161 takes every PreToolUse that reaches it for listen_here: after a
+  # rollback it allowed any server's read with no prompt and replaced the call's input with this folder's
+  # fingerprint (measured with the published 0.3.28). So the chat's own copy answers nothing, and the person is
+  # asked, as before D161. A newer copy is handed them, so a later version can still take the allow out.
+  if [ "$event" = PreToolUse ] && [ "$HANDN" -lt "$HANDME" ]; then
+    re='"tool_name" *: *"mcp__[^"]*__(whoami|read_chat|read_plan|estimate)"'
+    [[ $input =~ $re ]] && exit 0
+  fi
   AISLE_HANDED="$HANDFROM"
   CLAUDE_PLUGIN_ROOT="$HANDTO"
   source "$HANDTO/scripts/listen.sh" "$@"
@@ -241,6 +262,45 @@ if [[ $input =~ $re ]] && [ "${BASH_REMATCH[1]}" = PreToolUse ]; then
         esac
         shopt -u nocasematch
       fi
+      ;;
+    mcp__*)
+      # D161 (job d161h): AIsle's four read-only tools run with no prompt, and listen_here is filled (below), only on
+      # a server this chat's hooks module named AIsle's. A hook's input names the tool, never its server, so the
+      # module (hooks/allow.mjs), which alone sees the chat's tools, writes them to servers-<session> as
+      # |server|server|, from the chat's first turn on, and as || when it has none. By bash alone: a read starts no
+      # program and writes nothing.
+      server="${t#mcp__}"
+      tool_of="${server##*__}"
+      server="${server%__*}"
+      case "$server" in ''|*[!A-Za-z0-9_-]*) exit 0 ;; esac
+      own=''
+      if [ "$sid" != unknown ] && [ -f "$DATA/servers-$sid" ]; then
+        slurp "$DATA/servers-$sid"
+        own=no
+        case "$SL" in *"|$server|"*) own=yes ;; esac
+      fi
+      case "$tool_of" in
+        whoami|read_chat|read_plan|estimate)
+          # And only for an input of the shape AIsle's own schemas take (server/mcp.mjs): room, chat, since, limit,
+          # detail and optional, nothing else. A server is known as AIsle's by its words alone (allow-rules.mjs), so one
+          # that copied them gets at most a room's title per call with no prompt, never what it asks for (the d161h
+          # review). The strings are spelled out as letters, digits, spaces and common punctuation: a quote JSON escaped
+          # would end one early and let {"room":"a<escaped quote>}","text":"..."} pass, and this file holds no
+          # backslash to name one by. A title with any other character is asked, as before. A second "tool_input"
+          # means a key of that name inside the input.
+          fv='"room" *: *"[[:alnum:] _.,:;!?@#$%&*+=/()'"'"'-]{0,80}"|"chat" *: *"[[:alnum:]_-]{0,64}"|"(since|limit)" *: *[0-9]{1,12}|"detail" *: *"(summary|open|full|now)"|"optional" *: *(true|false)'
+          re='"tool_input" *: *[{] *(('"$fv"') *(, *('"$fv"') *)*)?[}]'
+          two='"tool_input".*"tool_input"'
+          [ "$own" = yes ] && [[ $input =~ $re ]] && [[ ! $input =~ $two ]] && printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"%s"}}' "AIsle plugin: this AIsle tool only reads the room, so it runs without asking (D161)"
+          exit 0
+          ;;
+        # With no file, the chat runs an older hooks module, which writes none: one opened before this version, which
+        # D84 hands this script and not the module. Its listen_here is filled as before, so listening does not break in
+        # every chat left open across the update.
+        listen_here) [ "$own" = no ] && exit 0 ;;
+        # Nothing else of any server is the plugin's to decide: post_message and get_skill stay asked.
+        *) exit 0 ;;
+      esac
       ;;
   esac
 fi
@@ -437,9 +497,9 @@ yes_add() {
 # nothing before its person has been told, once a clone, in this line ($CLONE/told says it was). The
 # chat that listens there says it when it starts or replies, or Claude hears it before an edit, and the
 # clone's yes is given only at a later chat start or reply, so after the reply that passed it on. Its
-# way out is said once too, so it says exactly what a stop does: it leaves out the worktree it is said
-# in, and the clone's yes moves to another folder of the clone that said yes (clone_unyes).
-NEWS_LINE='AIsle plugin, new in 0.3.7: since this folder said yes to the room, every worktree of this clone also tells the room, starting when this reply ends, which files it has unmerged changes on and the commits that made them, never what is in them, so parallel sessions can be warned. Tell your user this in one line. If they do not want it, call listen_here with the fingerprint stop: that turns listening off here and leaves this worktree out, and the rest of the clone stops only once that is done in a chat in each folder of it that said yes.'
+# way out is said once too, so it says exactly what off does (a stop until 0.3.29, D187): it leaves out the
+# worktree it is said in, and the clone's yes moves to another folder of the clone that said yes (clone_unyes).
+NEWS_LINE='AIsle plugin, new in 0.3.7: since this folder said yes to the room, every worktree of this clone also tells the room, starting when this reply ends, which files it has unmerged changes on and the commits that made them, never what is in them, so parallel sessions can be warned. Tell your user this in one line. If they do not want it, call listen_here with the fingerprint off: that turns listening off here and leaves this worktree out, and the rest of the clone stops only once that is done in a chat in each folder of it that said yes.'
 
 # The clone a folder belongs to: its git common dir, the same for every worktree of it. Sets COMMON,
 # TOP (the root of the folder's worktree), CID and CLONE, or fails outside git.
@@ -649,22 +709,116 @@ room_of_answer() {
   RT="$CT"
   return 0
 }
+# The AIsle account listen_here's answer says the folder now listens for (d14), into CT as clean_title makes it: only
+# from the server's sentence right after the one room_of_answer reads, so that a room title, which comes before it,
+# cannot put a name there. Call it after room_of_answer found that sentence once.
+account_of_answer() {
+  local bs re
+  bs=$(awk 'BEGIN { printf "%c", 92 }')
+  re='[(]room [0-9a-f-]{36}[)][.] This chat will be woken when someone else writes here[.] This folder now listens for the AIsle account ['"$bs"']"(([^"'"$bs"']|['"$bs"'][^"])*)['"$bs"']"[.]'
+  CT=''
+  [[ $input =~ $re ]] || return 1
+  clean_title "${BASH_REMATCH[1]}"
+  [ -n "$CT" ]
+}
 # The room this folder listens to, as "Listening is on" named it: its id into RID and its title into RT, from
 # one line of the folder's notes, read with bash's own read (a listener reads it twice a poll). Both empty for a
-# folder that said yes before the room was kept, until its chat says "listen here" again.
+# folder that said yes before the room was kept, until its chat says "listen here" again or a chat start learns the
+# id (room_backfill, job f37b), which keeps no title. RTQ is the wake's words for the title: none when there is none.
 room_line() {
   local l=''
-  RID='' RT=''
+  RID='' RT='' RTQ=''
   [ -f "$FOLDER/room" ] && { IFS= read -r l < "$FOLDER/room" || :; }
   case "$l" in *"$TAB"*) ;; *) return 0 ;; esac
   RID="${l%%"$TAB"*}"
   RT="${l#*"$TAB"}"
   case "$RID" in *[!0-9a-f-]*) RID='' ;; esac
   [ ${#RID} -eq 36 ] || RID=''
+  [ -n "$RT" ] && RTQ=" titled $q$RT$q"
   return 0
 }
 
-# Off for good in this folder, until listen_here is said here again: no chat here listens, and its
+# Who holds this folder, from this computer's own notes (d14): HELD_ROOM 'to "<title>" ' (empty when no room was
+# kept), HELD_WHO the AIsle account "Listening is on" named (or one this computer has no name for, for a yes said
+# before the room named it) and HELD_NAME the account alone, each with its quotes escaped for a JSON string.
+held_by() {
+  local a='' eq
+  # A quote escaped for JSON: the backslash made by awk, as everywhere here (no backslash in this file).
+  eq="$(awk 'BEGIN { printf "%c", 92 }')$q"
+  room_line
+  HELD_ROOM=''
+  [ -n "$RT" ] && HELD_ROOM="to $eq$RT$eq "
+  [ -f "$FOLDER/account" ] && { IFS= read -r a < "$FOLDER/account" || :; }
+  clean_title "$a"
+  if [ -n "$CT" ]; then HELD_WHO="the AIsle account $eq$CT$eq"; HELD_NAME="$eq$CT$eq"
+  else HELD_WHO='an AIsle account this computer has no name for yet'; HELD_NAME='that account'; fi
+}
+
+# A transcript's path as the hook's JSON gives it, with each backslash doubled, into TP.
+transcript_of() {
+  local b=''
+  TP="$1"
+  [ -s "$DATA/backslash" ] || awk 'BEGIN { printf "%c", 92 }' > "$DATA/backslash"
+  IFS= read -r -d '' b < "$DATA/backslash"
+  TP="${TP//"$b$b"/"/"}"
+}
+# Whether chat $1 of this folder is gone (D188): the listener's beat (D56) older than 120 s, and the chat's transcript,
+# beside this chat's as reclaim reads it, unchanged for 20 minutes. The beat is the folder's, and only the chat that
+# listens writes it, so it counts for that chat ($helper) alone; any other chat is judged by its transcript. The
+# transcript's time costs one program (find), only once the beat is old, at a start, a reply or a stop, never per poll. A
+# transcript this hook cannot find (no transcript_path, or kept in another project's folder) is taken as unchanged, so
+# the beat alone decides. A chat working through a long turn runs no loop, so no beat, and its transcript keeps it live.
+gone() {
+  local b='' tp
+  if [ -n "$1" ] && [ "$1" = "$helper" ] && [ -f "$FOLDER/beat" ]; then
+    IFS= read -r b < "$FOLDER/beat" || :
+    case "$b" in ''|*[!0-9]*) ;; *) stamp; [ $(( NOW - b )) -le 120 ] && return 1 ;; esac
+  fi
+  field transcript_path
+  [ -n "$FV" ] || return 0
+  transcript_of "$FV"
+  tp="${TP%/*}/$1.jsonl"
+  [ -f "$tp" ] || return 0
+  [ -z "$(find "$tp" -mmin -20 2>/dev/null)" ]
+}
+# When chat $1 of this folder started, in words a person reads, into CS: the time on the first of its transcript's first
+# lines that has one (Claude Code stamps each line, in UTC), or else when it took listening ($FOLDER/since).
+chat_start() {
+  local tp line n=0 s='' re='"timestamp" *: *"([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2}:[0-9]{2})'
+  CS=''
+  field transcript_path
+  if [ -n "$FV" ]; then
+    transcript_of "$FV"
+    tp="${TP%/*}/$1.jsonl"
+    if [ -s "$tp" ]; then
+      while [ $n -lt 8 ] && IFS= read -r line; do
+        n=$((n + 1))
+        [[ $line =~ $re ]] && { CS="started ${BASH_REMATCH[1]} ${BASH_REMATCH[2]} UTC"; return 0; }
+      done < "$tp"
+    fi
+  fi
+  [ -f "$FOLDER/since" ] && { IFS= read -r s < "$FOLDER/since" || :; }
+  if [ -n "$s" ]; then CS="listening since $s UTC"; else CS='its start is not known on this computer'; fi
+}
+
+# Whether an off (a stop until 0.3.29, D187) must first say what it turns off (d14): it does where this folder listens
+# (a chat here said yes and no off came since) and this chat was not told so in the last 10 minutes. It then notes that
+# this chat was told and puts the words in STOP_FIRST; the same chat's next off within 10 minutes acts. Elsewhere an off
+# acts at once, as before: nothing listens here to lose. A stop is this chat's alone now (quiet_here), and asks nothing.
+stop_unsaid() {
+  local at=0 said="$FOLDER/stop-said-${sid:-none}"
+  { [ -f "$FOLDER/helper" ] && [ ! -f "$FOLDER/stopped" ]; } || return 1
+  stamp
+  [ -n "$sid" ] && [ -f "$said" ] && { IFS= read -r at < "$said" || :; }
+  case "$at" in ''|*[!0-9]*) at=0 ;; esac
+  if [ -n "$sid" ] && [ $((NOW - at)) -lt 600 ]; then rm -f "$said"; return 1; fi
+  put "$said" "$NOW"
+  held_by
+  STOP_FIRST="Not done yet, and nothing was turned off: in this folder off turns listening off for the whole folder on this computer, for every room and every AIsle account, not only the room it names. This folder listens ${HELD_ROOM}for $HELD_WHO. If that is what your user asked for, call listen_here with off again within 10 minutes. If they meant only this chat, call listen_here with stop instead: that makes this chat alone quiet, and the folder keeps listening. If they meant one room, or this chat is signed in with another AIsle account, leave it on and tell your user."
+  return 0
+}
+
+# Off for good in this folder, by "off" (a stop until 0.3.29, D187), until listen_here is said here again: no chat here listens, and its
 # worktree is left out of what its clone tells the room, whichever folder said yes for the clone. A chat
 # the desktop app started in a worktree has the main folder for its folder (see in_worktree), so the
 # worktree it is in stops too: as first written, 0.3.25 kept hearing that chat's edits after its stop
@@ -672,7 +826,7 @@ room_line() {
 # review's correctness claim 1). First, as clone_of below sets the clone clone_unyes works on.
 stop_here() {
   mkdir -p "$FOLDER" || return 1
-  rm -f "$FOLDER/helper" "$FOLDER/answered" "$FOLDER/role" "$FOLDER/room"
+  rm -f "$FOLDER/helper" "$FOLDER/answered" "$FOLDER/role" "$FOLDER/room" "$FOLDER/account" "$FOLDER"/stop-said-*
   : > "$FOLDER/stopped"
   chat_folder && mkdir -p "$FO" && : > "$FO/stopped"
   if clone_of "$dir"; then
@@ -682,6 +836,43 @@ stop_here() {
     stop_unheard
   fi
   yes_index
+}
+# D187 (job f38): a chat's stop makes that chat quiet, and only it. Ofir, 2026-11-05 20:45Z: ""stop" should remove only
+# the calling chat, not deafen the folder. This mistake happened twice today": a side chat that had taken listening was
+# told to stay out, said stop, and the whole folder went deaf, its clone's report of unmerged files with it (19:42:33Z
+# and 20:40:16Z, the main laptop's listener log). So the chat is noted quiet ($FOLDER/quiet-<session>), and never takes
+# listening again, at its start, by reclaim or at a reply, until its person says listen here in it. When it held
+# listening, listening goes back to the chat that held it before (before-<session>, kept at each move), when that chat
+# is live (gone) and not quiet itself, and that chat says so at its next turn; or else to the next person's chat here
+# that ends a reply, an empty helper meaning no chat holds it. The folder's yes and its clone's reports stay as they
+# were: "off" turns the whole folder off (stop_here). QUIET_WHERE says what became of listening.
+quiet_here() {
+  local h='' p='' when
+  mkdir -p "$FOLDER" || return 1
+  : > "$FOLDER/quiet-$sid"
+  rm -f "$DATA/news-$sid"
+  QUIET_WHERE='This folder does not listen to the room on this computer, so nothing else changed.'
+  { [ -f "$FOLDER/answered" ] && [ ! -f "$FOLDER/stopped" ]; } || return 0
+  [ -f "$FOLDER/helper" ] && { IFS= read -r h < "$FOLDER/helper" || :; }
+  QUIET_WHERE='No chat here listens now; the next chat here that ends a reply takes listening over.'
+  [ -n "$h" ] || return 0
+  QUIET_WHERE='Another chat in this folder still listens, as before.'
+  [ "$h" = "$sid" ] || return 0
+  helper="$h"
+  [ -f "$DATA/before-$sid" ] && { IFS= read -r p < "$DATA/before-$sid" || :; }
+  rm -f "$DATA/before-$sid"
+  if [ -n "$p" ] && [ "$p" != "$sid" ] && [ ! -f "$FOLDER/quiet-$p" ] && ! gone "$p"; then
+    when=$(date -u '+%Y-%m-%d %H:%M')
+    echo "$p" > "$FOLDER/helper"
+    printf '%s' "$when" > "$FOLDER/since"
+    rm -f "$DATA/after-$p"
+    printf '%s' "AIsle: this chat listens to the room for this folder again, since $when UTC: the chat that took listening from it said stop. Tell your user in one line." > "$DATA/news-$p"
+    chat_start "$p"
+    QUIET_WHERE="Listening for this folder went back to the chat that had it before this one ($CS), which says so at its next turn."
+  else
+    : > "$FOLDER/helper"
+    QUIET_WHERE='The chat that listened here before this one is gone (no turn for 20 minutes), quiet itself, or there was none, so the next chat here that ends a reply takes listening over.'
+  fi
 }
 # A stop reaches the room through the clone's worker, which names the worktree at its next pass (report).
 # With none running (it ended after 12 hours unused, or for a newer copy), a stop said in a folder that does
@@ -1016,7 +1207,7 @@ active() {
 # pass gathers goes into COVERED, INDEX, WTS, ACTS and CURRENT, each written once after the pass (pass),
 # and the worktrees that said stop into STOPS, for the report.
 one_worktree() {
-  local w="$1" L line head='' mb key='' st='' seen='' was='' hash='' qhash='' more='' made='' OWN='' sn
+  local w="$1" L line head='' mb key='' st='' seen='' was='' hash='' qhash='' more='' made='' OWN='' sn lk due=''
   MOVED=''
   [ -d "$w" ] || return 0
   known "$w" || return 0
@@ -1044,18 +1235,34 @@ one_worktree() {
     [ -f "$L" ] || return 0
     [ -f "$L.k" ] && read -r head mb < "$L.k"
   else
-    # Straight from git: bash reads what a program prints in blocks, on every bash, and this starts no
-    # process more than the git. Written out for listed() only when the list is made again.
-    st=$(git --no-optional-locks -C "$w" -c core.quotePath=off status --porcelain=v2 --branch --no-renames -uno --ignore-submodules 2>/dev/null) || return 0
-    line="${st%%"$NL"*}"
-    head="${line#"# branch.oid "}"
-    { [ "$head" != "$line" ] && [ "$head" != "(initial)" ]; } || return 0
     # This copy's own last look ("$L.sn"), which 0.3.24 never writes: a move only a 0.3.24 pass saw is
     # still a move here, and "$L.f" is made again. "$L.seen" when there is none yet (just upgraded). Read
     # once in a worker's life and then kept in memory with it, as "=" and the look, so a quiet pass reads
     # no note at all: on a bash older than 5.2 each read of one forks (slurp).
     sn="AISLE_SN_$WID"
     seen="${!sn}"
+    lk="AISLE_LK_$WID"
+    # The git status of a worktree whose HEAD, index and reflog have not changed since its last look
+    # ("$L.l", written just before it), and that no edit hook named, is the last one, kept in memory:
+    # git looks again only when one of them changes, or once every LOOK_EVERY seconds for a file changed
+    # outside Claude and not staged. Measured on 0.3.28 (research/d21-cpu/MEASURE.md): a git status for
+    # each of 40 worktrees was 1.36 s of a 1.61 s pass and 41 of its 46 programs, every 40 s all day.
+    # Only a clean worktree is skipped (its last look named no file): one with files not committed is
+    # looked at every pass, so a file deleted or made again there and never staged is told at once
+    # (plugin-xver's 0.3.24 test).
+    if [ -n "$seen" ] && [[ "$NL${seen#=}" != *"$NL"[12u]" "* ]] && [ -n "${!lk}" ] && [ "$PASS_AT" -lt "${!lk}" ] && [[ $EDITED != *"$NL$WID$NL"* ]] && [ ! "$WGD/HEAD" -nt "$L.l" ] && [ ! "$WGD/index" -nt "$L.l" ] && [ ! "$WGD/logs/HEAD" -nt "$L.l" ]; then
+      st="${seen#=}"; st="${st#*"$NL"}"
+    else
+      : 2>/dev/null > "$L.l"
+      # The first look of each is spread over the period by its id, so they do not all fall in one pass.
+      if [ -z "${!lk}" ] && [[ ${WID:0:3} =~ ^[0-9a-f]+$ ]]; then due=$(( PASS_AT + 1 + 16#${WID:0:3} % LOOK_EVERY )); else due=$(( PASS_AT + LOOK_EVERY )); fi
+      # Straight from git: bash reads what a program prints in blocks, on every bash, and this starts no
+      # process more than the git. Written out for listed() only when the list is made again.
+      st=$(git --no-optional-locks -C "$w" -c core.quotePath=off status --porcelain=v2 --branch --no-renames -uno --ignore-submodules 2>/dev/null) || return 0
+    fi
+    line="${st%%"$NL"*}"
+    head="${line#"# branch.oid "}"
+    { [ "$head" != "$line" ] && [ "$head" != "(initial)" ]; } || return 0
     if [ -n "$seen" ]; then seen="${seen#=}"
     else
       slurp "$L.sn"
@@ -1098,6 +1305,8 @@ one_worktree() {
       keep "$L.sn" "$base$NL$st"
       printf -v "$sn" '=%s' "$base$NL$st"
     fi
+    # Only a look whose notes stand is kept for the passes after it.
+    if [ "${!sn}" = "=$base$NL$st" ]; then [ -z "$due" ] || printf -v "$lk" '%s' "$due"; else printf -v "$lk" '%s' ''; fi
   fi
   # Halfway through a merge the notes are kept as they are, and their hashes worked out for this pass.
   [ -n "$OWN" ] || hashes merging
@@ -1164,6 +1373,11 @@ report() {
     rm -f "$c/refused-at"
   fi
   { printf 'aisle-presence%s1%s' "$TAB" "$NL"; printf 'repo%s%s%s' "$TAB" "$repo" "$NL"; } > "$TMP/report"
+  # The yes folder's own name and its repository's name (D151, job f33), never a path or an address: shown to its
+  # person alone, on their own page. The folder-name line goes even when empty, so the room knows this plugin sends
+  # names and a repository that lost its origin loses its name there too. A room from before f33 skips both lines.
+  printf 'folder-name%s%s%s' "$TAB" "$NAME_F" "$NL" >> "$TMP/report"
+  [ -n "$NAME_R" ] && printf 'repo-name%s%s%s' "$TAB" "$NAME_R" "$NL" >> "$TMP/report"
   # Every worktree of the clone whose own folder said stop, by its id alone, at every report: the room
   # forgets all it kept of it at once. Since d22 it keeps a worktree left out of a report until its list
   # would have run out (8 hours for what is not committed, 24 for commits), so leaving it out is not
@@ -1397,6 +1611,84 @@ warnings() {
   done
 }
 
+# The two names "Your setup" shows for the folder that said yes, on its person's own page only (D151, job f33):
+# the folder's own name, the last part of its path, and, for a git checkout, its repository's name, the last part of
+# its origin remote's address without ".git". Never the path, the remote's address, its host, its owner or a user
+# name in it. Each without control characters, trimmed, at most 100 characters; "." and ".." are no name. By bash
+# alone: the one program is the git that reads the remote, once per yes and when the clone's git config changes.
+name_clean() {
+  local s="$1"
+  s="${s//[[:cntrl:]]/}"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s:0:100}"
+  s="${s%"${s##*[![:space:]]}"}"
+  case "$s" in .|..) s='' ;; esac
+  CN="$s"
+}
+# A path's last part, into CN, cleaned. Its backslashes are made slashes first (slashes_of).
+slashes_of() {
+  local b
+  [ -s "$DATA/backslash" ] || awk 'BEGIN { printf "%c", 92 }' > "$DATA/backslash"
+  IFS= read -r -d '' b < "$DATA/backslash"
+  SO="$1"
+  [ -n "$b" ] && SO="${SO//"$b"//}"
+}
+last_part() {
+  local p
+  slashes_of "$1"
+  p="$SO"
+  while [ "${p%/}" != "$p" ]; do p="${p%/}"; done
+  name_clean "${p##*/}"
+}
+# A remote's address ($1) to its repository's name, into RN: "https://user@host/owner/repo.git", "git@host:owner/repo",
+# "ssh://host:22/repo/", "file:///srv/repo.git" and "C:/repos/repo" all give "repo". An address with no path after its
+# host ("https://host", "git@host:") gives none, so a host never passes for a name.
+repo_name_of() {
+  local u p re
+  RN=''
+  slashes_of "$1"
+  u="${SO%%[?#]*}"
+  while [ "${u%/}" != "$u" ]; do u="${u%/}"; done
+  re='^[A-Za-z][A-Za-z0-9+.-]*://[^/]*(/.*)?$'
+  if [[ $u =~ $re ]]; then p="${BASH_REMATCH[1]}"
+  else
+    re='^[A-Za-z]:/'
+    if [[ $u =~ $re ]]; then p="$u"
+    else
+      re='^[^/]*:'
+      if [[ $u =~ $re ]]; then p="${u#*:}"; else p="$u"; fi
+    fi
+  fi
+  [ -n "$p" ] || return 0
+  last_part "$p"
+  CN="${CN%.git}"
+  name_clean "$CN"
+  RN="$CN"
+}
+# The names of this clone's yes ($1, its folder's key; $2 the clone's main worktree, $3 its git folder) into NAME_F
+# and NAME_R, kept in the clone's notes ($c/names: the key, the folder's name and the repository's name, a tab
+# between) until the yes or the clone's git config changes, so a pass starts no program for them.
+names_of_yes() {
+  local y="$1" main="$2" common="$3" kept='' rest p=''
+  NAME_F='' NAME_R=''
+  if [ -f "$c/names" ] && [ ! "$common/config" -nt "$c/names" ]; then
+    IFS= read -r kept < "$c/names"
+    if [ "${kept%%"$TAB"*}" = "$y" ]; then
+      rest="${kept#*"$TAB"}"
+      NAME_F="${rest%%"$TAB"*}"
+      NAME_R="${rest#*"$TAB"}"
+      return 0
+    fi
+  fi
+  [ -f "$DATA/folders/$y/path" ] && IFS= read -r p < "$DATA/folders/$y/path"
+  CN=''
+  [ -n "$p" ] && last_part "$p"
+  NAME_F="${CN//"$TAB"/}"
+  repo_name_of "$(git -C "$main" remote get-url origin 2>/dev/null)"
+  NAME_R="${RN//"$TAB"/}"
+  keep "$c/names" "$y$TAB$NAME_F$TAB$NAME_R"
+}
+
 # One pass of the worker: every worktree of the clone looked at, one report, and, when anything it
 # depends on moved, the warnings worked out again.
 pass() {
@@ -1413,7 +1705,10 @@ pass() {
   # or the room hears every worktree twice for a day, the stopped one too. Also when it moved while no
   # worker ran: the token comes from the clone's notes then (worker_main).
   if [ -n "$SENTWITH" ] && [ "$SENTWITH" != "$yes" ]; then give_up "$SENTWITH" "$c"; SENTWITH=''; rm -f "$c/sentwith"; fi
-  if [ ! -d "$common" ] || ! git -C "$common" worktree list --porcelain > "$TMP/wl" 2>/dev/null; then
+  # The worktree list is read again when a worktree was added or removed (its folder under the clone's
+  # git folder changed), and once every LOOK_EVERY seconds: a program less in most passes.
+  if [ ! -s "$TMP/wl" ] || [ "$common/worktrees" -nt "$TMP/wl" ] || [ "$NOW" -ge "$WL_DUE" ]; then WL_DUE=$(( NOW + LOOK_EVERY )); line=new; fi
+  if [ ! -d "$common" ] || { [ "$line" = new ] && ! git -C "$common" worktree list --porcelain > "$TMP/wl" 2>/dev/null; }; then
     log "presence: the clone at $common is gone; asked again in a day"
     stamp
     keep "$c/gone" "$NOW"
@@ -1510,6 +1805,8 @@ pass() {
   fi
   # Nothing is sent once the notes went in the middle of this pass.
   [ -s "$c/common" ] || exit 0
+  # And the yes folder's two names, for its person's own "Your setup" (D151).
+  names_of_yes "$yes" "$main" "$common"
   chosen
   report
   if [ -n "$NEED" ]; then
@@ -1649,7 +1946,10 @@ a_worker() {
 }
 
 worker_main() {
-  local pid='' start took warm='' every="${AISLE_PASS_SECONDS:-40}" idle="${AISLE_IDLE_MINUTES:-720}"
+  local pid='' start took warm='' every="${AISLE_PASS_SECONDS:-40}" idle="${AISLE_IDLE_MINUTES:-720}" beat_due=0
+  # How long a quiet worktree's git status, and the worktree list, are kept before git is asked again (pass).
+  LOOK_EVERY="${AISLE_LOOK_SECONDS:-$(( 10 * every ))}"
+  WL_DUE=0
   TABLE_SECONDS="${AISLE_TABLE_SECONDS:-300}"
   TABLE_MINUTES="${AISLE_TABLE_MINUTES:-1440}"
   # The clone's notes: global, so the functions below and the exit trap all see it.
@@ -1708,7 +2008,18 @@ worker_main() {
     if [ ! -f "$c/told" ]; then give_up "$SENTWITH" "$c"; rm -f "$c/sentwith"; log "presence: worker $$ ends: its person has not been told what it shares"; exit 0; fi
     if [ -f "$c/lock/stop" ]; then log "presence: worker $$ ends: a newer copy of the plugin takes over"; exit 0; fi
     if plugin_gone; then log "presence: worker $$ ends: $GONE"; exit 0; fi
-    if [ ! -f "$c/beat" ] || [ -n "$(find "$c/beat" -mmin +"$idle" 2>/dev/null)" ]; then
+    # How old the last use is took a program (find) every pass. Now a file dated $idle minutes ago is made
+    # once every 10 minutes (touch), and each pass compares the beat with it, in bash: the worker ends at
+    # most 10 minutes past the 12 hours, and at once for a beat older still. Where touch cannot date a
+    # file (a bash with no printf %()T), find asks every pass, as before.
+    if [ "$SECONDS" -ge "$beat_due" ]; then
+      beat_due=$(( SECONDS + 600 ))
+      stamp
+      took=''
+      printf -v took '%(%Y%m%d%H%M.%S)T' $(( NOW - idle * 60 )) 2>/dev/null
+      [ -n "$took" ] && touch -t "$took" "$TMP/idle.ref" 2>/dev/null
+    fi
+    if [ ! -f "$c/beat" ] || { [ -f "$TMP/idle.ref" ] && [ "$c/beat" -ot "$TMP/idle.ref" ]; } || { [ ! -f "$TMP/idle.ref" ] && [ -n "$(find "$c/beat" -mmin +"$idle" 2>/dev/null)" ]; }; then
       log "presence: worker $$ ends: nothing has used this clone for $idle minutes"
       exit 0
     fi
@@ -2098,8 +2409,27 @@ case "$tool" in
 esac
 
 if [ "$event" = "PreToolUse" ]; then
+  # Only listen_here is filled. Every other tool left the fast path above already, but a later chat's hooks.json
+  # may send this copy, as the one installed now after a rollback, a tool it does not know (the d161h review).
+  case "$tool" in mcp__*__listen_here) ;; *) exit 0 ;; esac
+  # D187: "stop" makes this chat quiet, and only this chat (quiet_here). It never reaches the room.
   re='"fingerprint" *: *"stop"'
   if [[ $input =~ $re ]]; then
+    quiet_here || exit 0
+    log "stop: $sid is quiet in $dir. $QUIET_WHERE"
+    reason="Done, and not an error: the AIsle plugin made only this chat quiet: the room no longer wakes it, and it never takes this folder's listening again, unless your user says listen here in it. $QUIET_WHERE The folder's yes, and what its clone tells the room (which files have unmerged changes), are as they were. If your user meant the whole folder on this computer, call listen_here with the fingerprint off. Tell your user in one line."
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}' "$reason"
+    exit 0
+  fi
+  # "off" is the whole folder (D187): what "stop" did until 0.3.29, with d14's say-first step.
+  re='"fingerprint" *: *"off"'
+  if [[ $input =~ $re ]]; then
+    # d14: where this folder listens, off says first what it turns off, and acts on the same chat's second off.
+    if stop_unsaid; then
+      log "off: told what it turns off for $dir, not done yet"
+      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}' "$STOP_FIRST"
+      exit 0
+    fi
     stop_here || exit 0
     log "listening turned off for $dir"
     # Not "the room did not need to be contacted", as it said from D28 on: since presence (0.3.7) a stop in a
@@ -2125,7 +2455,16 @@ if [ "$event" = "PreToolUse" ]; then
   [[ $input =~ $re ]] && named=',"computer":"'"${BASH_REMATCH[1]}"'"'
   re='"chat" *: *"([0-9a-f]{32})"'
   [[ $input =~ $re ]] && named="$named"',"chat":"'"${BASH_REMATCH[1]}"'"'
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"%s","updatedInput":{"fingerprint":"%s"%s%s}}}' "AIsle plugin: filled in this folder's listener fingerprint, which is not a secret" "$(fingerprint "$(folder_token)")" "$room" "$named"
+  # d14: where another chat here listens, the room and AIsle account that hold the folder, from this computer's own
+  # notes, and the one step for a chat of another account, whose call the room refuses naming no one (finding 9).
+  ctx=''
+  h=''
+  [ -f "$FOLDER/helper" ] && [ ! -f "$FOLDER/stopped" ] && { IFS= read -r h < "$FOLDER/helper" || :; }
+  if [ -n "$h" ] && [ "$h" != "$sid" ]; then
+    held_by
+    ctx=',"additionalContext":"AIsle plugin, from this computer: this folder already listens '"$HELD_ROOM"'for '"$HELD_WHO"'. If this chat is signed in with another AIsle account, the room refuses this call and the folder stays with '"$HELD_NAME"': the one step then is to say listen here in a chat in another folder."'
+  fi
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"%s","updatedInput":{"fingerprint":"%s"%s%s}%s}}' "AIsle plugin: filled in this folder's listener fingerprint, which is not a secret" "$(fingerprint "$(folder_token)")" "$room" "$named" "$ctx"
   exit 0
 fi
 
@@ -2436,7 +2775,11 @@ if [ "$event" = "PostToolUse" ]; then
         role=$(cat "$FOLDER/role" 2>/dev/null)
         if [ -n "$h" ] && [ "$role" = reporter ]; then where="the room listens through another folder of yours, so no chat here is woken"
         elif [ -n "$h" ] && [ "$h" = "$sid" ]; then where="this chat is the one that listens in this folder ✓"
-        elif [ -n "$h" ]; then where="another chat in this folder listens, not this one. A new chat opened here takes that chat's listening over when it starts"
+        elif [ -f "$FOLDER/quiet-$sid" ] && [ -f "$FOLDER/answered" ]; then
+          # D187: listening, quiet or not listening, for each chat.
+          if [ -n "$h" ]; then other='Another chat here listens.'; else other='No chat here listens now; the next chat here that ends a reply takes it.'; fi
+          where="this chat is quiet: it said stop, so the room never wakes it and it never takes this folder's listening. $other To listen in this chat again, say listen here in it"
+        elif [ -n "$h" ]; then chat_start "$h"; where="another chat in this folder listens, not this one ($CS). To move listening to this chat, say listen here in it"
         elif [ -f "$FOLDER/answered" ]; then where="no chat in this folder listens ✗. Fix: say listen here in this chat"
         elif [ -n "$covered" ]; then where="no chat in this folder listens; its clone said yes in another folder. To be woken here too, say listen here in this chat"
         else where="this folder chose not to listen. To turn it on, say listen here in this chat"; fi
@@ -2449,14 +2792,27 @@ if [ "$event" = "PostToolUse" ]; then
       mkdir -p "$FOLDER" || exit 0
       date -u +%Y-%m-%dT%H:%M:%SZ > "$asked"
       log "asked once whether to listen for $dir"
-      printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s"}}' "AIsle plugin ✓ (version ${VER:-unknown}) on this computer. Nothing in this folder wakes up when somebody writes in the room, and it has never been asked. Ask your user now, one question and nothing else, in your app's question box (in Claude Code, AskUserQuestion; plain text only if there is none): shall this chat listen for the room, yes or no? Options: 'Yes, listen here (Recommended)', because a chat that listens is woken when someone writes, and 'No'. A yes also tells the room which files this clone's worktrees have unmerged changes on and the commits that made them, never what is in them, so parallel sessions can be warned. If yes, call listen_here. If no, call listen_here with the fingerprint stop, and say nothing more about it: this is asked once per folder, ever."
+      printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s"}}' "AIsle plugin ✓ (version ${VER:-unknown}) on this computer. Nothing in this folder wakes up when somebody writes in the room, and it has never been asked. Ask your user now, one question and nothing else, in your app's question box (in Claude Code, AskUserQuestion; plain text only if there is none): shall this chat listen for the room, yes or no? Options: 'Yes, listen here (Recommended)', because a chat that listens is woken when someone writes, and 'No'. A yes also tells the room which files this clone's worktrees have unmerged changes on and the commits that made them, never what is in them, so parallel sessions can be warned. If yes, call listen_here. If no, call listen_here with the fingerprint off, and say nothing more about it: this is asked once per folder, ever."
       exit 0
       ;;
   esac
   # Only a call the room accepted picks this chat.
   [[ $input == *'Listening is on'* ]] || exit 0
   mkdir -p "$FOLDER" || exit 0
+  # D186: the chat that had listening hears at its next turn that it moved, and this chat's stop gives it back (D187).
+  was=''
+  [ -f "$FOLDER/helper" ] && [ ! -f "$FOLDER/stopped" ] && { IFS= read -r was < "$FOLDER/helper" || :; }
+  rm -f "$DATA/before-$sid" "$DATA/news-$sid"
+  when=$(date -u '+%Y-%m-%d %H:%M')
+  if [ -n "$was" ] && [ "$was" != "$sid" ]; then
+    printf '%s' "$was" > "$DATA/before-$sid"
+    printf '%s' "AIsle: this chat no longer listens to the room for this folder: since $when UTC another chat here does, because its person said listen here there. Tell your user in one line; to listen in this chat again, they can say listen here in it." > "$DATA/news-$was"
+    log "listening for $dir moved from $was on listen here"
+  fi
+  printf '%s' "$when" > "$FOLDER/since"
   echo "$sid" > "$FOLDER/helper"
+  # A quiet chat listens again once its person says listen here in it (D187).
+  rm -f "$FOLDER/quiet-$sid"
   # This folder has said yes once. Every later chat here starts listening without asking again.
   date -u +%Y-%m-%dT%H:%M:%SZ > "$FOLDER/answered"
   rm -f "$FOLDER/stopped" "$FOLDER/role" "$FOLDER/refused"
@@ -2481,6 +2837,13 @@ if [ "$event" = "PostToolUse" ]; then
   # the room this folder had before. Written before the last-seen number goes: a listener that writes that
   # number back then finds the room changed, and deletes it again (keep_after).
   if room_of_answer; then put "$FOLDER/room" "$RID$TAB$RT"; else rm -f "$FOLDER/room"; fi
+  # And the AIsle account the answer says the folder now listens for (d14), so that another account's chat saying
+  # listen here, or any stop, is told whose the folder is from this computer; none when the answer names none.
+  if [ -n "$RID" ] && account_of_answer; then put "$FOLDER/account" "$CT"; else rm -f "$FOLDER/account"; fi
+  # And the room address this yes was said on (f37b, #986): the backfill asks a folder only on its own address, so a
+  # chat pointed at another server never sends it this folder's credential. An address only, never a credential.
+  put "$FOLDER/url" "$U"
+  rm -f "$FOLDER"/stop-said-*
   # A fresh start: the first look reports what is unread, rather than counting from an old visit.
   rm -f "$DATA/after-$sid" "$DATA/said-lost-$sid"
   log "this chat now listens for $dir"
@@ -2494,7 +2857,7 @@ fi
 # restart, and removing its "already said" markers made them ask again (seen 2026-09-19).
 # A week-old session's notes are of no use to anyone. A copy passed over 10 minutes ago is checked again
 # (see ready). One find for all of it, as each program costs 50 to 200 ms in Git Bash.
-find "$DATA" -maxdepth 1 -type f '(' '(' -name 'after-*' -o -name 'said-*' -o -name 'pid-*' -o -name 'handover-*' -o -name 'person-*' -o -name 'pc-*' -o -name 'named-*' ')' -mtime +7 -o -name 'handover-no-*' -mmin +10 ')' -delete 2>/dev/null
+find "$DATA" -maxdepth 1 -type f '(' '(' -name 'after-*' -o -name 'said-*' -o -name 'pid-*' -o -name 'handover-*' -o -name 'person-*' -o -name 'before-*' -o -name 'news-*' -o -name 'servers-*' -o -name 'pc-*' -o -name 'named-*' ')' -mtime +7 -o -name 'handover-no-*' -mmin +10 ')' -delete 2>/dev/null
 forget_stale
 forget_old_records
 
@@ -2519,11 +2882,15 @@ if here_clone; then
   [ -f "$CLONE/yes" ] && worker_up
 fi
 
-# The newest chat in this folder is the one the person is in, so at its start it takes listening over
-# (D38). No question, nothing to type. The chat that had it notices at its next turn through the loop
-# and stops without a word. Stop, unlike SessionStart, never takes anything over: it runs after every
-# reply in every chat, and a room would ping-pong between two open chats forever.
-# A chat in one of this folder's Claude Code worktrees is not that chat (0.3.20): see in_worktree.
+# A chat that starts in this folder takes listening over only from a chat that is gone (D186, D188, job f38), and any
+# person's chat here that ends a reply picks it up from a gone chat too, so a closed listener no longer leaves the folder
+# deaf until a new chat starts. A live chat is never taken from, by a start or a reply, so no reply passes the room
+# between two open chats, which is what D38 feared. D38 took it at every start ("the newest chat in this folder is the
+# one the person is in"), and on 2026-11-05 that was false: on the main laptop listening for the AO folder changed hands
+# 9 times in four hours, 5 of them new chats taking it at their start, and the chat Ofir was in stopped without a word
+# (room #1130: "this is unacceptable"). Now a chat that starts where another listens says so once and stays quiet, and
+# when listening moves, the chat that lost it is told at its next turn and the one that took it says so.
+# A chat in one of this folder's Claude Code worktrees takes it at neither (0.3.20): see in_worktree.
 # Nor is a chat that only compacted (0.3.22): Claude Code starts it again with source "compact", the same
 # chat, which the person did not just open. An older chat's compaction took listening from the chat Ofir
 # had picked with listen_here (2026-10-17 04:12 UTC, listener log).
@@ -2549,14 +2916,7 @@ nobody_line() {
   [[ $1 == *"${q}turnOrigin${q}:${q}scheduled${q}"* ]] && return 0
   return 1
 }
-# A transcript's path as the hook's JSON gives it, with each backslash doubled, into TP.
-transcript_of() {
-  local b=''
-  TP="$1"
-  [ -s "$DATA/backslash" ] || awk 'BEGIN { printf "%c", 92 }' > "$DATA/backslash"
-  IFS= read -r -d '' b < "$DATA/backslash"
-  TP="${TP//"$b$b"/"/"}"
-}
+# A transcript's path, as transcript_of makes it from the hook's JSON, is defined above stop_unsaid: a stop reads it too.
 # Whether a transcript ($1) is a run nobody is in (0), a person's or a continued chat (1), or not known yet (2): no
 # file, or no message in its first 8 lines. Read once, as it is now, a line at a time, as scheduled() reads: only
 # its first lines, which a chat writes once and never grows.
@@ -2609,6 +2969,62 @@ reclaim() {
   nobody_in "$mine"
   [ $? -eq 1 ]
 }
+# gone and chat_start, which a start, a reply, a stop and whoami read, are defined above stop_unsaid.
+# Whether this chat is a person's, by its own transcript's first lines, as nobody_in reads them: not a run nobody is in
+# (D130), not a scheduled task's run, and not a chat in one of this folder's worktrees (0.3.20). Only such a chat picks
+# listening up at its reply (D187: "the next person's chat in the folder that ends a reply"); one whose transcript
+# cannot be read yet is not taken for one.
+person_chat() {
+  local line n=0 r tp
+  in_worktree && return 1
+  field transcript_path
+  [ -n "$FV" ] || return 1
+  transcript_of "$FV"
+  tp="$TP"
+  [ -s "$tp" ] || return 1
+  while [ $n -lt 8 ] && IFS= read -r line; do
+    n=$((n + 1))
+    [[ $line == *'<scheduled-task '* ]] && return 1
+    nobody_line "$line"; r=$?
+    [ $r -eq 0 ] && return 1
+    [ $r -eq 1 ] && return 0
+  done < "$tp"
+  return 1
+}
+# The line left for this chat when listening moved without it (news-<session>, D186), into NEWS_HERE, and gone from the
+# data folder: said once, at its next reply, or its next start that is not a compaction's (told_moved), unless it takes
+# listening back then. A chat listening came back to says it with its first look at the room (D187).
+news_here() {
+  NEWS_HERE=''
+  [ -f "$DATA/news-$sid" ] || return 1
+  IFS= read -r NEWS_HERE < "$DATA/news-$sid" || :
+  rm -f "$DATA/news-$sid"
+  [ -n "$NEWS_HERE" ]
+}
+told_moved() {
+  news_here || return 0
+  log "told $sid that listening for $dir moved from it"
+  echo "$NEWS_HERE" >&2
+  exit 2
+}
+# Listening moves to this chat from $helper, which may be no chat (D186): the folder's helper, when it moved (since),
+# which chat held it before (before-<this chat>, which a stop gives it back to, D187), and the one line the chat that
+# lost it hears at its next turn (news-<that chat>). TOOK is what this chat says, at its first look at the room. $1: how
+# it moved, in the line to the chat that lost it; $2: why, in this chat's own line. One program (date), at a move only.
+take() {
+  local when
+  echo "$sid" > "$FOLDER/helper"
+  when=$(date -u '+%Y-%m-%d %H:%M')
+  printf '%s' "$when" > "$FOLDER/since"
+  rm -f "$DATA/after-$sid" "$DATA/said-lost-$sid" "$DATA/before-$sid" "$DATA/news-$sid"
+  if [ -n "$helper" ] && [ "$helper" != "$sid" ]; then
+    printf '%s' "$helper" > "$DATA/before-$sid"
+    [ -n "$1" ] && printf '%s' "AIsle: this chat no longer listens to the room for this folder: since $when UTC another chat here does, $1. Tell your user in one line; to listen in this chat again, they can say listen here in it." > "$DATA/news-$helper"
+  fi
+  TOOK="AIsle: this chat now listens to the room for this folder, $2. Tell your user in one line."
+}
+GONE_WORDS='no listener beat for 2 minutes and no turn for 20 minutes'
+TOOK=''
 helper=$(cat "$FOLDER/helper" 2>/dev/null)
 if [ "$helper" != "$sid" ]; then
   if [ "$event" = "SessionStart" ] && in_worktree; then
@@ -2621,15 +3037,41 @@ if [ "$helper" != "$sid" ]; then
     if [ -n "$NOBODY" ]; then log "$sid is a run nobody is in; listening stays with the chat that has it"
     else log "$sid is a scheduled task's run; listening stays with the chat that has it"; fi
     exit 0
+  elif [ -f "$FOLDER/quiet-$sid" ]; then
+    # D187: a chat that said stop never takes listening again, at its start, by reclaim or at a reply, until its person
+    # says listen here in it. What it lost before its stop is not news to it now.
+    rm -f "$DATA/news-$sid"
+    [ "$event" = "SessionStart" ] && log "$sid is quiet (it said stop); listening for $dir stays as it is"
+    exit 0
   elif [ "$event" = "SessionStart" ]; then
-    echo "$sid" > "$FOLDER/helper"
-    rm -f "$DATA/after-$sid" "$DATA/said-lost-$sid"
-    log "took listening over for $dir (new chat)"
+    if [ -z "$helper" ]; then
+      take '' 'since no chat here listened'
+      log "took listening for $dir (new chat; no chat listened)"
+    elif gone "$helper"; then
+      take "a chat that started after this one had gone quiet ($GONE_WORDS)" "since the chat that listened here before had gone quiet ($GONE_WORDS); that chat is told at its next turn"
+      log "took listening over for $dir from $helper, gone (new chat)"
+    else
+      # D186: the person may be in the chat that listens. Said once, and nothing is taken.
+      told_moved
+      chat_start "$helper"
+      log "a chat started where $helper listens; listening stays with it"
+      say_once another "AIsle: another chat in this folder listens ($CS); say listen here to take it. This chat stays quiet: the room does not wake it. Tell your user in one line."
+    fi
   elif reclaim; then
-    echo "$sid" > "$FOLDER/helper"
-    rm -f "$DATA/after-$sid" "$DATA/said-lost-$sid"
-    log "took listening back for $dir from $helper, a run nobody is in"
+    was="$helper"
+    helper=''
+    take '' 'taken back from a run nobody is in (claude -p, or a session another session started)'
+    log "took listening back for $dir from $was, a run nobody is in"
+  elif person_chat && { [ -z "$helper" ] || gone "$helper"; }; then
+    if [ -z "$helper" ]; then
+      take '' 'since no chat here listened'
+      log "took listening for $dir at a reply (no chat listened)"
+    else
+      take "a chat that ended a reply after this one had gone quiet ($GONE_WORDS)" "since the chat that listened here before had gone quiet ($GONE_WORDS); that chat is told at its next turn"
+      log "took listening over for $dir from $helper, gone (a reply)"
+    fi
   else
+    told_moved
     exit 0
   fi
 fi
@@ -2653,8 +3095,11 @@ fi
 lock="$DATA/pid-$sid"
 if [ -f "$lock" ] && kill -0 "$(cat "$lock" 2>/dev/null)" 2>/dev/null; then exit 0; fi
 echo $$ > "$lock"
+# The chat listening came back to (D187) hears so with its first look at the room, as a chat that took it does (TOOK).
+news_here && TOOK="$NEWS_HERE"
 F=$(mktemp)
-trap 'rm -f "$lock" "$F"' EXIT
+FR=''
+trap 'rm -f "$lock" "$F" ${FR:+"$FR"}' EXIT
 
 folder_token > /dev/null
 header_of "$FOLDER"
@@ -2680,7 +3125,7 @@ reporter() {
   exit 0
 }
 lost() {
-  rm -f "$FOLDER/helper" "$FOLDER/answered" "$FOLDER/asked" "$FOLDER/role" "$FOLDER/room"
+  rm -f "$FOLDER/helper" "$FOLDER/answered" "$FOLDER/asked" "$FOLDER/role" "$FOLDER/room" "$FOLDER/account" "$FOLDER"/stop-said-*
   here_clone && clone_unyes
   yes_index
   log "stop: the room refused this folder's listener"
@@ -2694,11 +3139,75 @@ lost() {
 heartbeat() { echo "${EPOCHSECONDS:-$(date +%s)}" 2>/dev/null > "$FOLDER/beat"; }
 heartbeat
 
-case "$(role_of)" in
+said_role=$(role_of)
+case "$said_role" in
   reporter) reporter ;;
   refused) lost ;;
   listener) [ "$(cat "$FOLDER/role" 2>/dev/null)" = listener ] || put "$FOLDER/role" listener ;;
 esac
+
+# A folder that said yes before 0.3.29 kept no room file (job f37b), so the way back after a restart
+# (hooks/reopen-rules.mjs) could not tell that another folder here still listens to its room, and offered to reopen
+# its chat (PC 4, #943). So, while the room answers this folder as a listener:
+# - At every listener start, a chat start or a reply, this folder keeps the room role_of's answer names, when it kept
+#   none: no request of its own, and before room_line below, so its room is known before its first poll and no later
+#   read takes it for a room it moved to.
+# - At a chat start, each other yes folder with no room file, neither stopped nor refused, with a token and no loop
+#   running (its beat older than 120 s), asks /presence with its own credential which room it is in, and keeps the id
+#   with an empty title, as room_line reads it. A folder whose loop runs is left to learn its room at its own next
+#   start: a room file written under a running loop reads as a move to another room, and that loop drops its poll's
+#   answer, a worker's ask with it (f37b's review, F1). A folder the room refuses, or names no room for, is left as
+#   it is: its own loop handles a refusal.
+room_from() {
+  local all id=''
+  slurp "$1"
+  all="$NL$SL$NL"
+  case "$all" in *"${NL}room$TAB"*) id="${all#*"${NL}room$TAB"}"; id="${id%%"$NL"*}" ;; esac
+  [[ $id =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
+  [ ! -f "$2/room" ] || return 1
+  put "$2/room" "$id$TAB"
+}
+room_backfill() {
+  local f d b u code n=0 now="${EPOCHSECONDS:-$(date +%s)}"
+  for f in "$DATA"/folders/*/answered; do
+    [ -f "$f" ] || continue
+    d="${f%/answered}"
+    [ "${d##*/}" = "${FOLDER##*/}" ] && continue
+    [ -f "$d/room" ] && continue
+    [ -f "$d/stopped" ] && continue
+    [ -f "$d/refused" ] && continue
+    # Only a folder on this chat's room address (#986): its url note, or UDEF for one that said yes before it was
+    # kept. A chat pointed at another server sends no other folder's credential there.
+    u=''
+    [ -f "$d/url" ] && { IFS= read -r u < "$d/url" || :; }
+    [ "${u:-$UDEF}" = "$U" ] || continue
+    [ -s "$d/token" ] || continue
+    b=''
+    [ -f "$d/beat" ] && { IFS= read -r b < "$d/beat" || :; }
+    case "$b" in ''|*[!0-9]*) ;; *) [ $(( now - b )) -le 120 ] && continue ;; esac
+    header_of "$d"
+    # A fresh file for each folder, and an answer curl did not finish is no answer: a 200 cut before its body would
+    # otherwise leave the answer of the folder asked before in the file, and give this folder that folder's room
+    # (f37b's review, 2026-11-01). The file is mktemp's own (f37c S4), made at the first folder asked, never a name
+    # beside another file that anyone could make first; emptied, not removed, so the name stays this chat's.
+    [ -n "$FR" ] || FR=$(mktemp) || return 0
+    : > "$FR"
+    code=$(curl -sS -m 5 -A "aisle-plugin/${VER:-0.0.0}" -o "$FR" -w '%{http_code}' -H "@$d/header" "${U%/watch}/presence" 2>/dev/null) || code=cut
+    [ "$code" = 200 ] && room_from "$FR" "$d" && n=$((n + 1))
+  done
+  [ -z "$FR" ] || rm -f "$FR"
+  FR=''
+  [ $n -eq 0 ] || log "kept the room of $n folder(s) that said yes before the plugin kept it"
+  return 0
+}
+if [ "$said_role" = listener ]; then
+  room_from "$F" "$FOLDER" && log "kept the room role_of named for $dir"
+  # And the room address this folder listens on, now that the room answered it as a listener there (f37c S4): a yes
+  # said by an older copy (a rollback to 0.3.29) kept no note of its address, and left the one before. Only when it
+  # changed. An address only, never a credential.
+  note "$FOLDER/url" "$U"
+  if [ "$event" = SessionStart ]; then room_backfill; fi
+fi
 
 after_file="$DATA/after-$sid"
 # The room this loop's last-seen number belongs to (D121 step 1), read before the number, so a "listen here" for
@@ -2791,8 +3300,10 @@ while true; do
   if [ -n "$ask" ]; then
     keep_after "${latest:-${after:-0}}" || { moved; continue; }
     log "wake: a worker's ask #$ask has had no answer for 10 minutes"
+    # A chat listening moved to says so first, on a line of its own (D186), in this same wake.
+    [ -n "$TOOK" ] && echo "$TOOK" >&2
     if [ -n "$RID" ]; then
-      echo "AIsle: a worker asked for work at #$ask in the room titled $q$RT$q (room id $RID) and nobody has answered for 10 minutes. Call read_chat with that id as the room, then answer it in the room: a job for it, or one line saying there is none yet. Tell your user in one line." >&2
+      echo "AIsle: a worker asked for work at #$ask in the room$RTQ (room id $RID) and nobody has answered for 10 minutes. Call read_chat with that id as the room, then answer it in the room: a job for it, or one line saying there is none yet. Tell your user in one line." >&2
     else
       echo "AIsle: a worker asked for work at #$ask in the room and nobody has answered for 10 minutes. Call read_chat, then answer it in the room: a job for it, or one line saying there is none yet. Tell your user in one line." >&2
     fi
@@ -2806,20 +3317,24 @@ while true; do
     keep_after "$after" || { moved; continue; }
     if [ "${unread:-0}" -gt 0 ]; then
       log "wake: $unread unread at the start"
+      # A chat listening moved to says so first, on a line of its own (D186), in this same wake.
+      [ -n "$TOOK" ] && echo "$TOOK" >&2
       if [ -n "$RID" ]; then
-        echo "AIsle: $unread message(s) in the room titled $q$RT$q (room id $RID) you have not read yet. Call read_chat with that id as the room when it is relevant to your user." >&2
+        echo "AIsle: $unread message(s) in the room$RTQ (room id $RID) you have not read yet. Call read_chat with that id as the room when it is relevant to your user." >&2
       else
         echo "AIsle: $unread message(s) in the room you have not read yet. Call read_chat when it is relevant to your user." >&2
       fi
       exit 2
     fi
+    # Or alone, when nothing is unread.
+    if [ -n "$TOOK" ]; then log "wake: told this chat that listening moved to it"; echo "$TOOK" >&2; exit 2; fi
     continue
   fi
   if [ "${new:-0}" -gt 0 ]; then
     keep_after "${latest:-$after}" || { moved; continue; }
     log "wake: $new new"
     if [ -n "$RID" ]; then
-      echo "AIsle: $new new message(s) from someone else in the room titled $q$RT$q (room id $RID). Call read_chat with that id as the room to read them, and tell your user if it matters to them." >&2
+      echo "AIsle: $new new message(s) from someone else in the room$RTQ (room id $RID). Call read_chat with that id as the room to read them, and tell your user if it matters to them." >&2
     else
       echo "AIsle: $new new message(s) from someone else in the room. Call read_chat to read them, and tell your user if it matters to them." >&2
     fi
@@ -2831,7 +3346,7 @@ while true; do
     keep_after "${latest:-$after}" || { moved; continue; }
     log "wake: told that your other computers' wakes stop until a person writes"
     if [ -n "$RID" ]; then
-      echo "AIsle: your assistants on your other computers have woken this chat 48 times since a person last wrote in the room titled $q$RT$q (room id $RID), or 48 times today, so their posts no longer wake it until a person writes there. Call read_chat with that id as the room to read what is new, and tell your user in one line that until a person writes in the room, this chat sees those posts only when it checks the room itself, about every 10 minutes." >&2
+      echo "AIsle: your assistants on your other computers have woken this chat 48 times since a person last wrote in the room$RTQ (room id $RID), or 48 times today, so their posts no longer wake it until a person writes there. Call read_chat with that id as the room to read what is new, and tell your user in one line that until a person writes in the room, this chat sees those posts only when it checks the room itself, about every 10 minutes." >&2
     else
       echo "AIsle: your assistants on your other computers have woken this chat 48 times since a person last wrote in the room, or 48 times today, so their posts no longer wake it until a person writes there. Call read_chat to read what is new, and tell your user in one line that until a person writes in the room, this chat sees those posts only when it checks the room itself, about every 10 minutes." >&2
     fi

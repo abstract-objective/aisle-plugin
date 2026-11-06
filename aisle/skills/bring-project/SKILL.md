@@ -1,6 +1,9 @@
 ---
 name: bring-project
 description: 'Bring an existing project into AIsle: read the project in this folder, or in the folder the user names, and write its starting plan, with the work already done marked done, then post it to the project''s AIsle room. Use when the user asks to bring, connect, import or set up this project (or "our existing project") in AIsle, or to make an AIsle plan from this repo.'
+allowed-tools:
+  - Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/bring-project/gap-check.mjs" *)
+  - Bash(bash "${CLAUDE_PLUGIN_ROOT}/skills/bring-project/post-plan.sh" *)
 ---
 
 Your user wants the project in this folder to start in AIsle from what it already is, not from an empty
@@ -59,10 +62,14 @@ Owner: <your user's name>
     Domain: <a big area, from the project's own folders or parts>
       Sub-domain: <a smaller area>
         Job b1: <what it is> | owner <name> | agent none | status done | Blocks: none | Done when: <the evidence>
-        Job b2: <what it is> | owner <name> | agent none | status not started | Blocks: b1 | Done when: <a check anyone can run>
+        Job b2: <what it is> | owner <name> | agent none | status not started | hours: 2-4 | Blocks: b1 | Done when: <a check anyone can run>
 ```
 
 - Statuses are exactly: done, in progress, not started, blocked.
+- **Every job that is not done gets `hours:`**, after its status, from what you read: the agent-hours of
+  AI work it takes. Judge it as the build alone, one number when you are sure (`hours: 3`) and a range
+  when you are not (`hours: 6-8`): the estimate of how long the plan takes adds up to 1.7 times that for
+  reviews and tries, and gives a job with no `hours:` a default for its type. A done job needs none.
 - **Mark a job done only with evidence you saw:** a merged commit, a release, a page that exists. Put
   the evidence in its Done when ("merged 2026-09-03, 4f2a1c0"). When you are not sure, it is not done.
 - In progress: work on a branch that is not merged, an issue someone is assigned to, or work that is
@@ -76,6 +83,21 @@ Owner: <your user's name>
   the open work is where the detail belongs.
 - No line in the plan may be just `Plan:`, `Status:` or `Briefs:` on its own.
 
+## 3b. The company around it: what the plan misses
+
+A plan built from the project's folders has the code's areas and none of the company around it (D128). Check
+it with the gap check this skill carries, `gap-check.mjs` in this skill's base directory, which reads only
+`aisle/PLAN.md` and prints, writing nothing:
+`node "${CLAUDE_PLUGIN_ROOT}/skills/bring-project/gap-check.mjs" --dir "<the project's folder>"`
+It names each area a software project needs now that has no job (the website, docs, a support channel, a
+trust page and others), each with one first job. If `node` cannot run here, skip this step and say so.
+
+- In step 4, say the missing areas in one line, and ask once, in the question box, which first jobs to add,
+  one option per area and "None for now". **Add a first job only on your user's yes**, never on your own.
+- For the areas they pick, print the lines with the same command and `--add <their ids>` (for example
+  `--add P5,C1`), and paste them as printed into `aisle/PLAN.md` where its `#` lines say (the end of the tree);
+  the `#` lines are not plan lines. Each is optional until your user keeps it. Then show the plan again.
+
 ## 4. Show it, then post it only on a yes
 
 Tell your user, in a few lines: the goal, the number of domains and jobs, how many you marked done
@@ -88,8 +110,8 @@ On a yes:
 - Find the room with `whoami`; its `Conversation:` line names it: `(room id <id>)` after the title.
   If the sign-in reaches several rooms, ask which one is this project's.
 - Post the plan with the poster this skill carries, `post-plan.sh` in this skill's base directory (Claude
-  Code names that folder when the skill loads). It prints the exact messages and posts nothing itself:
-  `bash "<this skill's base directory>/post-plan.sh" --dir "<the project's folder>"`
+  Code writes the plugin's folder into the command when the skill loads). It prints the messages, posts nothing:
+  `bash "${CLAUDE_PLUGIN_ROOT}/skills/bring-project/post-plan.sh" --dir "<the project's folder>"`
   lists them, each one's length and first line. Then for each, in order, print it with the same command
   and `--part 1`, `--part 2` and so on, and post it with `post_message` as it is: nothing added, nothing
   left out, never typed again. A plan of up to 15,994 characters is one message, `Plan:` and the plan,

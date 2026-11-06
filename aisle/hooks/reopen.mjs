@@ -13,7 +13,7 @@
 // each folder named there is still on the computer; nothing else.
 import {
   AUTO_REOPEN, LOOK_AFTER_MS, REOPEN_TIMEOUT_MS, RECHECK_MS, dataFolderFromRoot, onWindows, hostPath,
-  offers, remember, listeningAgain, drawsOn, looksIn, askLine, openingLine, openedNote, sidebarLine, failedNote,
+  offers, remember, listeningAgain, listensNow, roomIdFrom, sameRoom, drawsOn, looksIn, askLine, openingLine, openedNote, sidebarLine, failedNote,
   resumeLink, openLinkCommand, shortReason,
 } from './reopen-rules.mjs';
 
@@ -27,8 +27,15 @@ let looking = null;  // the timer that looks again while the strip is up
 
 /** The offers the data folder holds now, newest stop first. */
 async function gather($) {
+  const read = await readFolders($);
+  if (!read) return [];
+  return offers(read.folders, { now: await $.clock.now(), cwd, sessionId: me, answering: read.answering, answered: await $.store.get(ANSWERED) });
+}
+
+/** The folders a look reads, and when each loop last ended to wake its chat, or null with no data folder. */
+async function readFolders($) {
   const data = dataFolderFromRoot($.plugin.root);
-  if (!data || !(await $.fs.exists(`${data}/folders`))) return [];
+  if (!data || !(await $.fs.exists(`${data}/folders`))) return null;
   const windows = onWindows($.plugin.root);
   // When each loop last ended to wake its chat with a message.
   const answering = {};
@@ -43,17 +50,21 @@ async function gather($) {
       const dir = `${data}/folders/${d.name}`;
       const files = {};
       for (const f of await $.fs.list(dir)) if (f.kind === 'file') files[f.name] = f.mtimeMs;
-      // Read further only a folder that said yes and has a chat and a beat: most folders were only asked.
-      if (!('answered' in files) || 'stopped' in files || 'refused' in files || !('helper' in files) || !('path' in files) || !('beat' in files)) continue;
+      // Read further only a folder that said yes and has a beat: most folders were only asked. One with a chat and a
+      // path may be offered; one with a room file may be what still listens to a stopped folder's room (job f37), even
+      // with no chat or path, as a folder that said yes earlier may be.
+      if (!('answered' in files) || 'stopped' in files || 'refused' in files || !('beat' in files)) continue;
+      const offerable = 'helper' in files && 'path' in files;
+      if (!offerable && !('room' in files)) continue;
       const text = (name) => (name in files ? $.fs.read(`${dir}/${name}`) : '');
-      const folder = { id: d.name, files, helper: await text('helper'), path: await text('path'), beat: await text('beat'), role: await text('role') };
-      folder.pathExists = await $.fs.exists(hostPath(folder.path, windows));
+      const folder = { id: d.name, files, helper: await text('helper'), path: await text('path'), beat: await text('beat'), role: await text('role'), room: await text('room') };
+      folder.pathExists = offerable && (await $.fs.exists(hostPath(folder.path, windows)));
       folders.push(folder);
     } catch {
       // A folder half written, or removed while it was read: nothing to offer.
     }
   }
-  return offers(folders, { now: await $.clock.now(), cwd, sessionId: me, answering, answered: await $.store.get(ANSWERED) });
+  return { folders, answering };
 }
 
 /** Whether the offer's folder listens again: a new, fresh beat. */
@@ -61,6 +72,33 @@ async function listening($, o) {
   const data = dataFolderFromRoot($.plugin.root);
   const beat = await $.fs.read(`${data}/folders/${o.id}/beat`).catch(() => '');
   return listeningAgain(beat, o, await $.clock.now());
+}
+
+/**
+ * Whether another folder of the offer's room listens now (job f37): its room is heard again on this computer. The
+ * folders are the ones a look found in the offer's room before (o.peers), and one counts only while its room file
+ * still names the offer folder's own (f37d V2): one that moved to another room and listens there does not hear this
+ * one. The two room files are read only once a folder listens.
+ */
+async function heardElsewhere($, o) {
+  const data = dataFolderFromRoot($.plugin.root);
+  const now = await $.clock.now();
+  let mine;
+  for (const id of o.peers ?? []) {
+    const dir = `${data}/folders/${id}`;
+    const files = {};
+    for (const f of await $.fs.list(dir).catch(() => [])) if (f.kind === 'file') files[f.name] = f.mtimeMs;
+    const beat = 'beat' in files ? await $.fs.read(`${dir}/beat`).catch(() => '') : '';
+    if (!listensNow({ files, beat }, now) || !('room' in files)) continue;
+    if (mine === undefined) mine = await roomOf($, o.id);
+    if (mine !== null && (await roomOf($, id)) === mine) return true;
+  }
+  return false;
+}
+
+/** The room a folder's room file names now (roomIdFrom), or null. */
+async function roomOf($, id) {
+  return roomIdFrom(await $.fs.read(`${dataFolderFromRoot($.plugin.root)}/folders/${id}/room`).catch(() => ''));
 }
 
 function draw($, next) {
@@ -79,14 +117,49 @@ function keepLooking($) {
   }
 }
 
+/**
+ * Whether the offer folder's own room is known now (f37b's reviews, F2 and A; f37c S1). A chat's first look comes 3 s
+ * after it opens, the backfill that writes room files can land seconds later, and a folder whose loop runs learns its
+ * room only at its own next start, minutes or hours after. So the offer folder's own room file is read at each look
+ * (one read); once it names a room, the caller reads the data folder at every look, whatever folders of the room were
+ * found before: one found earlier may be one whose loop stopped too, or whose place is gone (f37c S1).
+ */
+async function roomKnown($, o) {
+  return (await roomOf($, o.id)) !== null;
+}
+
+/**
+ * Whether the room of a strip whose own room is known is heard through another folder now (f37b's second review). It
+ * reads the data folder for the folders of that room and keeps their ids in the offer itself, so a press on the strip
+ * as drawn still counts (B). Only a folder of the room that listens ends the re-read, by taking the strip down: one
+ * found that does not listen (its loop stopped too, or its place is gone) leaves it to the next look, one reading every
+ * RECHECK_MS while such a strip is up (A, f37c S1), since a live folder may learn its room only hours later. Whether
+ * the stop was answered does not count here, as a Reopen answers it and the folder still does not listen (C): only
+ * whether the room is heard. So in every state of the strip, the line after a Reopen too: once another folder of the
+ * room listens, that line has done its job (f37c S3), as f37's heardElsewhere has it.
+ */
+async function heardNow($, o) {
+  const read = await readFolders($);
+  const mine = read?.folders.find((f) => f.id === o.id);
+  if (!mine) return false;
+  const peers = sameRoom(mine, read.folders);
+  const now = await $.clock.now();
+  if (peers.some((g) => listensNow(g, now))) return true;
+  o.peers = peers.map((g) => String(g.id)).filter((id) => /^[0-9a-f]{16}$/.test(id));
+  return false;
+}
+
 async function look($) {
   try {
     if (shown?.state === 'opening') return;
     if (shown) {
-      // While the strip is up only its own folder is looked at again (one read, not the whole data folder):
-      // it goes once that folder listens again, or once another chat answered it.
+      // While the strip is up only its own folder and the folders of its room are looked at again, not the whole
+      // data folder: it goes once that folder listens again, once its room is heard through another folder (job
+      // f37), or once another chat answered it.
       const o = shown.offer;
-      const gone = (await listening($, o)) || (shown.state === 'ask' && (await $.store.get(ANSWERED))?.[o.id] === o.key);
+      const gone = (await listening($, o)) || (await heardElsewhere($, o))
+        || (shown.state === 'ask' && (await $.store.get(ANSWERED))?.[o.id] === o.key)
+        || ((await roomKnown($, o)) && (await heardNow($, o)));
       if (!gone || shown?.offer !== o) return;
       draw($, null);
     }

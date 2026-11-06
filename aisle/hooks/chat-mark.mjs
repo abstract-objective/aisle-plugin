@@ -5,9 +5,11 @@
 // link.mjs: no Node, `$` reaches everything outside, and nothing here may throw or make the person wait. Anything
 // that goes wrong sends the call as the model made it, which is how every call went before. It reaches no network,
 // runs no program and changes no setting. It writes one file, in the plugin's own data folder: `named-<session>`,
-// which tells this chat's listener (listen.sh) to name the chat to the room too, from then on.
+// which tells this chat's listener (listen.sh) to name the chat to the room too, from then on. Its turn.start and its
+// tool.call also run D161's part (allow.mjs), which writes `servers-<session>`.
 import { CHAT_TOOLS, takesChat, anyTakesChat, chatIdOf, withChat, namedFileOf } from './chat-mark-rules.mjs';
 import { computerAtTurn } from './computer.mjs';
+import { allowAtTurn, allowServer } from './allow.mjs';
 
 /** Tell this chat's listener that its reads are named, once: the file holds the chat's 32 hex. Never throws. */
 async function tellListener($, sessionId, chat) {
@@ -25,6 +27,8 @@ async function named($, e) {
   try {
     aisle = takesChat(await $.tool.list(), e.tool);
     if (!aisle) return e;
+    // D161: this server is AIsle's, so its reads may run with no prompt (allow.mjs).
+    await allowServer($, e.tool);
     const sessionId = e.agentId === undefined ? await $.session.id() : null;
     const chat = sessionId ? await chatIdOf(sessionId) : null;
     if (chat) await tellListener($, sessionId, chat);
@@ -62,8 +66,10 @@ export const register = (on) => {
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e);
     await atTurn($);
-    // And its computer (D124, computer.mjs): one turn.start for both, as the engine takes only one with no matcher.
+    // And its computer (D124, computer.mjs): one turn.start for all three, as the engine takes only one with no matcher.
     await computerAtTurn($);
+    // And which of its servers are AIsle's, for listen.sh's read allow (D161, allow.mjs).
+    await allowAtTurn($);
     return next(e);
   }).catch(($, e, next) => next(e));
 };

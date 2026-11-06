@@ -77,12 +77,52 @@ export function hostOf(raw) {
 }
 
 /**
- * Where Claude Code keeps its own local config, in the order to look: `.claude.json` in CLAUDE_CONFIG_DIR when set,
- * else in the home folder (HOME, then USERPROFILE on Windows).
+ * Where Claude Code keeps its own local config: the one file it reads, `.claude.json` in CLAUDE_CONFIG_DIR when that is
+ * set to something (as it is, no trim and no ~), else in the home folder (claudeHomeOf: the variable os.homedir() reads first).
+ * Claude Code 2.1.309 reads `join(process.env.CLAUDE_CONFIG_DIR || homedir(), '.claude.json')` and no second
+ * file (job bh7). Job bh2: so a config folder with no file yet (a second account) names no account, never the home's,
+ * and a signed-out file names none either. An empty list only with no value and no home.
  */
 export function configFilesOf({ configDir, home, userProfile }) {
-  const at = (dir) => (dir ? `${String(dir).replace(/[\\/]+$/, '')}/.claude.json` : null);
-  return [at(configDir), at(home), at(userProfile)].filter((p, i, all) => p && all.indexOf(p) === i);
+  const dir = setConfigDir(configDir) || claudeHomeOf({ home, userProfile });
+  return dir ? [`${trimSlash(dir)}/.claude.json`] : [];
+}
+
+const trimSlash = (dir) => (/^[\\/]+$/.test(String(dir)) ? '' : String(dir).replace(/[\\/]+$/, ''));
+
+/** CLAUDE_CONFIG_DIR as Claude Code takes it: the value as it is, with no trim and no ~; '' when unset or empty. */
+const setConfigDir = (v) => (typeof v === 'string' ? v : '');
+
+/**
+ * The home folder, from the two variables given (job bh7's review, R3): on Windows USERPROFILE when set (a HOME Git
+ * Bash sets beside it is not read), else HOME; elsewhere HOME when set (a USERPROFILE that WSL passes in through WSLENV
+ * is not read), else USERPROFILE. Null when neither is set. The first choice is the variable Claude Code's homedir()
+ * (os.homedir()) reads; the second is a stand-in, since os.homedir() then asks the OS for the account's folder and
+ * never reads the other variable: on Windows it never reads HOME (job bh11).
+ */
+export function claudeHomeOf({ home, userProfile }) {
+  return onWin32(userProfile) ? userProfile || home || null : home || userProfile || null;
+}
+
+/** Whether this runs on Windows: process.platform, read at each call; in a runtime with no process, a USERPROFILE on a drive. */
+function onWin32(userProfile) {
+  const platform = typeof process === 'object' && process ? process.platform : '';
+  return platform ? platform === 'win32' : /^[A-Za-z]:[\\/]/.test(String(userProfile ?? ''));
+}
+
+/**
+ * Claude Code's own config folder, the one reading tools/ and the plugin's hooks share (job bh7), as Claude Code
+ * 2.1.309 reads it (research/plan-proof/bh7.md): CLAUDE_CONFIG_DIR as it is when set, with no trim and no ~, in NFC
+ * (Claude Code's `(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')).normalize('NFC')`), else `.claude` in
+ * the home folder, as it is, so that tools/ stay byte for byte as before with the variable unset. An empty
+ * value counts as unset, as Claude Code's global file reads it (`CLAUDE_CONFIG_DIR || homedir()`); its config folder
+ * would take "" for the folder it runs in, which nothing outside it can know. Null with neither a value nor a home.
+ */
+export function claudeConfigDirOf({ configDir, home, userProfile }) {
+  const set = setConfigDir(configDir);
+  if (set) return set.normalize('NFC'); // as Claude Code's config folder (its global file, configFilesOf, is not)
+  const h = claudeHomeOf({ home, userProfile });
+  return h ? `${trimSlash(h)}/.claude` : null;
 }
 
 /**

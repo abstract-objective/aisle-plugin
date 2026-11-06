@@ -5,13 +5,15 @@
 // that goes wrong sends the call with no computer, which the room takes as it took every post before D124. It reaches
 // no network and runs no program. It reads Claude Code's own local config for its account id alone, at most once in
 // 10 minutes. It writes only in the plugin's own data folder: `computer-id` once per computer, and `pc-<session>`,
-// which tells this chat's listener (listen.sh) to name the computer to the room too, from then on.
+// which tells this chat's listener (listen.sh) to name the computer to the room too, from then on. A call it takes as
+// AIsle's also adds its server to `servers-<session>` (D161, allow.mjs).
 import { anyTakesChat, chatIdOf } from './chat-mark-rules.mjs';
 import {
   COMPUTER_TOOLS, aisleRoom, COMPUTER_ID_FILE, COMPUTER_NAME_FILE, COMPUTERS_FLAG, pcFileOf, parseComputerId,
   newComputerId, hostOf, configFilesOf, claudeAccountIdOf, claudeAccountHashOf, computerField, withComputer, ACCOUNT_READ_MS,
 } from './computer-rules.mjs';
 import { dataFolderFromRoot } from './reopen-rules.mjs';
+import { allowServer } from './allow.mjs';
 
 /** The text of a file, or '' when it is not there or cannot be read. Never throws. */
 async function textOf($, file) {
@@ -94,6 +96,8 @@ async function filled($, e, kept) {
   try {
     aisle = aisleRoom(await $.tool.list(), e.tool);
     if (!aisle) return e;
+    // D161: this server is AIsle's, so listen.sh fills its listen_here and lets its reads run with no prompt (allow.mjs).
+    await allowServer($, e.tool);
     const on = await here($, kept);
     if (!on) return withComputer(e);
     let sessionId = null;

@@ -10,9 +10,10 @@
 // What listen.sh keeps, per folder, in <data>/folders/<id>/: `answered` once the folder said yes, `stopped`
 // once it said stop, `refused` when the room no longer knows its token, `role` ("reporter" when the room
 // listens through another folder), `helper` (the session id of the chat that listens), `path` (the folder),
-// and `beat`, the time in seconds its listening loop last went round. In <data>/ itself, `after-<session>`
-// is written just before a loop ends to wake its chat with a message.
-import { pluginIdFromRoot } from './update-rules.mjs';
+// `beat`, the time in seconds its listening loop last went round, and `room`, "<room id><TAB><title>", the room
+// the folder listens to (from 0.3.29 on; none for a yes said before). In <data>/ itself, `after-<session>` is
+// written just before a loop ends to wake its chat with a message.
+import { dataFolderFromRoot, onWindows } from './update-rules.mjs';
 
 /** A beat older than this means the loop stopped: one turn of it takes 60 s at most (a 40 s poll, a 20 s wait). */
 export const STALE_MS = 120 * 1000;
@@ -79,23 +80,9 @@ export const drawsOn = (surface) => surface === 'desktop';
  */
 export const looksIn = (surfaces) => !Array.isArray(surfaces) || surfaces.length === 0 || surfaces.some(drawsOn);
 
-/**
- * The plugin's data folder, `<plugins>/data/<id>`, for a copy installed from a marketplace, whose root is
- * `<plugins>/cache/<marketplace>/<plugin>/<version>`. Claude Code's rule (plugins reference, environment
- * variables): `<id>` is the plugin identifier, `<plugin>@<marketplace>`, with every character other than a
- * letter, digit, `_` or `-` made `-`. Null for any other copy: the module cannot know its folder for certain.
- */
-export function dataFolderFromRoot(root) {
-  const id = pluginIdFromRoot(root);
-  if (!id) return null;
-  const raw = String(root);
-  const parts = raw.split(/[\\/]+/).filter(Boolean);
-  const plugins = parts.lastIndexOf('cache') - 1;
-  return `${/^[\\/]/.test(raw) ? '/' : ''}${[...parts.slice(0, plugins + 1), 'data', id.replace(/[^A-Za-z0-9_-]/g, '-')].join('/')}`;
-}
-
-/** Whether the plugin runs on Windows, from its own folder: a drive letter. */
-export const onWindows = (root) => /^[A-Za-z]:[\\/]/.test(String(root ?? ''));
+// The plugin's data folder (dataFolderFromRoot) and whether it runs on Windows (onWindows) live in update-rules.mjs
+// since job su1, where the self-update writes its trace; they are this file's too, as before, for every module here.
+export { dataFolderFromRoot, onWindows };
 
 /** A folder as this computer opens it: on Windows, Git Bash's `/c/...` is `C:/...`. */
 export function hostPath(p, windows) {
@@ -131,6 +118,50 @@ export function sessionIdFrom(text) {
 export function beatSeconds(text) {
   const s = String(text ?? '').trim();
   return /^[0-9]{1,12}$/.test(s) ? Number(s) : null;
+}
+
+/** A room id in the one form listen.sh writes it: a uuid in lower case (room_of_answer). */
+const ROOM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * The room a folder listens to, from its `room` file (job f37): the text before the first tab on its first line,
+ * when it is a room id as listen.sh writes it. Null for anything else, so no folder is matched on a file listen.sh
+ * did not write; the title is not needed.
+ */
+export function roomIdFrom(text) {
+  const line = String(text ?? '').split(/\r?\n/)[0];
+  const tab = line.indexOf('\t');
+  const id = tab < 0 ? '' : line.slice(0, tab);
+  return ROOM_ID.test(id) ? id : null;
+}
+
+/**
+ * Whether a folder listens now: it said yes, neither said stop since nor was refused, and its loop went round in
+ * the last STALE_MS. A reporter's beat counts as any other's.
+ */
+export function listensNow(folder, now) {
+  const files = folder?.files && typeof folder.files === 'object' ? folder.files : {};
+  if (!('answered' in files) || 'stopped' in files || 'refused' in files) return false;
+  const beat = beatSeconds(folder.beat);
+  return beat !== null && now - beat * 1000 <= STALE_MS;
+}
+
+/**
+ * The other folders of this computer in the same room as `folder`, by their room files (job f37). None when
+ * `folder` kept no room, and never one that kept none: a yes from before 0.3.29 says nothing about its room.
+ */
+export function sameRoom(folder, folders) {
+  const room = roomIdFrom(folder?.room);
+  const list = [];
+  if (!room) return list;
+  for (const g of Array.isArray(folders) ? folders : []) {
+    try {
+      if (g && g !== folder && g.id !== folder.id && roomIdFrom(g.room) === room) list.push(g);
+    } catch {
+      // A folder that cannot be read says nothing about the room.
+    }
+  }
+  return list;
 }
 
 /**
@@ -175,13 +206,22 @@ export function offerFor(folder, ctx) {
   return { id: f.id, helper, path, name, key, stoppedAt };
 }
 
-/** Every folder to offer, newest stop first: the strip shows one at a time. */
+/**
+ * Every folder to offer, newest stop first: the strip shows one at a time. A stopped folder whose room another
+ * folder of this computer still listens to is not offered (job f37, PC 4's #928): the room is heard, and reopening
+ * that chat would put a second listener on it. Each offer names the folders of its room (`peers`), so a strip that
+ * is up can go once one of them listens again.
+ */
 export function offers(folders, ctx) {
+  const all = Array.isArray(folders) ? folders : [];
   const list = [];
-  for (const f of Array.isArray(folders) ? folders : []) {
+  for (const f of all) {
     try {
       const o = offerFor(f, ctx);
-      if (o) list.push(o);
+      if (!o) continue;
+      const peers = sameRoom(f, all);
+      if (peers.some((g) => listensNow(g, ctx.now))) continue;
+      list.push({ ...o, peers: peers.map((g) => String(g.id)).filter((id) => /^[0-9a-f]{16}$/.test(id)) });
     } catch {
       // A folder that cannot be read has nothing to offer.
     }

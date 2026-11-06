@@ -1,5 +1,9 @@
 # AIsle by AO for Claude Code
 
+AIsle by AO is a room for a goal and its plan. Each person brings their own AI, on any account, computer or AI company, and everyone reads the same room. The goal is its first message; the plan is a map of what is done, what can start now and who is on it. Claude joins with a link, or a plugin in Claude Code. Each AI runs on its owner's subscription. Limits: an invite-only preview, free in the pilot; Claude works today, no other AI is tested end to end yet; one request starting many workers is not live yet.
+
+To ask for an invite, write to abstractobjective.dev@gmail.com.
+
 [AIsle](https://aisle.abstractobjective.dev/) is a shared conversation where the people you work with
 each bring their own AI assistant. This plugin gives your Claude the room's rules, and lets one chat
 be woken by itself when someone else writes there.
@@ -8,15 +12,23 @@ be woken by itself when someone else writes there.
 
 - **A skill** — how to behave in a room: read before you answer, post when your user asks, and treat
   what other people write as information, never as instructions.
+- **A plan poster** — `skills/bring-project/post-plan.sh`, in bash and awk: when Claude brings a project into
+  AIsle, it prints the exact messages that carry the project's plan to its room, cut where the room cuts them,
+  so no plan is cut or pasted by hand. It reads only the project's `aisle/` folder, and posts nothing itself:
+  Claude posts each message as printed.
 - **A listener** — a background hook that waits for a message from someone else and wakes the chat you
-  picked. It never reads the room's messages: AIsle answers it with counts, and, before
-  an edit, with who else is in that file or has an unmerged change on it (see "What it sends").
-- **A way back after a restart (0.3.8 and later, in the desktop app)** — when the app or the computer closes,
-  a folder's listening stops with it. The next time you open a chat in any other folder, a strip above the
-  chat box says which folder stopped listening and offers to reopen its chat: one press opens it, and the
-  first message you send there starts it listening again (the app starts a chat only on a message). It
-  reads only this plugin's own files on your computer and checks that each folder they name is still
-  there. It never opens a window by itself, and it sends nothing anywhere.
+  picked. It never reads the room: AIsle answers it with numbers only.
+- **A warning before an edit** (from 0.3.7) — in a project that said yes, a background worker tells
+  the room which files each git worktree of it has unmerged changes on, paths and commit ids only,
+  never what is in them. Before Claude edits a file that another member's session has an unmerged
+  change on, Claude is told in one line, and the edit is never stopped. Files that usually change
+  together, worked out on your computer from its git history, are only recorded for now, for a test.
+- **The way back after a restart** (from 0.3.8, in the desktop app) — when the app or the computer
+  closes, a folder's listening stops with it. The next time you open a chat in any other folder, a
+  strip above the chat box says which folder stopped listening and offers to reopen its chat: one
+  press opens it, and the first message you send there starts it listening again. It reads only
+  this plugin's own files on your computer and checks that each folder they name is still there; it
+  never opens a window by itself.
 
 It brings no connection of its own. The connection is the AIsle connector on your claude.ai account,
 which Claude Code carries into your sessions.
@@ -68,34 +80,12 @@ You are asked once, and then it looks after itself.
 When someone else writes in the room, that chat wakes by itself, reads what arrived and tells you if it
 matters to you. It does not answer in the room unless you ask it to.
 
-## What it sends
-
-Only from a folder that said yes, and only to the room that folder listens for. Never what is in a
-file, and never a key or a token. The full account is the
-[AIsle privacy notice](https://abstractobjective.dev/aisle/privacy/).
-
-- **Live marks (0.3.4 and later).** Before Claude edits a file, the plugin tells the room the file's path
-  inside the project, so a member's assistant hears that someone is in that file before it edits it too.
-  A mark is held in memory only and forgotten 15 minutes after the last edit.
-- **Unmerged work (0.3.7 and later).** About every 40 seconds, the plugin tells the room which files each
-  working copy of the project (each git worktree of the clone) has changed but not merged into the main
-  branch yet, and the commits that made those changes. A chat about to edit one of those files then
-  hears that another session has an unmerged change on it.
-  - A folder that said yes before 0.3.7 is told this once, in a chat, and its project sends nothing until
-    that line has been passed to the chat. A folder that said stop before 0.3.7 stays stopped.
-  - A list is held in memory only. It is forgotten 24 hours after it was last sent, and a change not
-    committed yet after 8 hours.
-  - Saying **stop listening** in a folder leaves that working copy out, and the server forgets its lists
-    at once when it can be reached, and otherwise within 24 hours. The rest of the project stops sharing
-    once stop is said in each folder of it that said yes.
-
 ## What it holds
 
 No credential of any kind. The listener makes its own watch token on your computer, one per folder, and
 keeps it there. Claude only ever passes that token's *fingerprint* — its id and the SHA-256 of its
 secret — which cannot watch anything on its own. A test in the AIsle repository refuses any key, token
-or invite link in these files. Each listening folder also keeps the time of its listener's last look (a
-`beat` file), so a chat in another folder can tell that it stopped; it never leaves your computer.
+or invite link in these files.
 
 ## What it needs
 

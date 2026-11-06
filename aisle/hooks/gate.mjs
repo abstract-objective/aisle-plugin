@@ -16,8 +16,8 @@
 //
 // It imports nothing. The plugin ships alone, from its own repository, so it cannot reach engine/, and node:path's
 // resolve reads the process's folder. What it needs from engine/aisle/chain.mjs (the job file) and
-// engine/aisle/oversee.mjs (what "under owns" means, the plan's own files) is copied below, and test/gate.test.mjs pins
-// every copy to its source.
+// engine/aisle/oversee.mjs (what "under owns" means, a path in .git, the plan's own files) is copied below, and
+// test/gate.test.mjs pins every copy to its source.
 
 // ---- 1. Copies, each pinned to its source by test/gate.test.mjs --------------------------------------------------------
 
@@ -66,6 +66,15 @@ export function globRegExp(glob) {
   return new RegExp(`^${re}${')'.repeat(brace)}$`);
 }
 
+/**
+ * A folder name that is git's own (job bh6): ".git" in any case, as Windows reads it ("." and blanks at the end dropped,
+ * a ":" stream taken off), or its 8.3 short name "GIT~1". A worktree's ".git" is a file; the same name covers it.
+ * Since job bh9 its source is oversee.mjs gitName, which the overseer's scope check reads.
+ */
+export const gitName = (seg) => { const n = seg.split(':')[0].replace(/[. ]+$/, '').toLowerCase(); return n === '.git' || /^git~\d+$/.test(n); };
+/** Whether a path has a ".git" folder or file in it, at any depth, with "/" or "\" (oversee.mjs inGitDir). */
+export const inGitDir = (path) => String(path).split(/[\\/]/).some(gitName);
+
 /** Whether `path` is under one owns item: the file, inside the folder it names, or matched by its glob (oversee.mjs inOwns). */
 export function inOwns(path, ownsPaths = []) {
   const p = String(path);
@@ -111,12 +120,29 @@ export function readJob(text) {
   return { id: fields.job, taken: fields.taken || '', chain, owns, budget, packet, scope: readOwnsLine(owns), limits: readBudget(budget) };
 }
 
-/** The job file's owns line ("a, b", "see mission", "none", "not set") → { paths, mission, none, set }. */
+/**
+ * An owns field's items, trimmed (job bh10, plan.mjs ownsItems): cut at each ";", and at each "," outside a "{…}", so
+ * a brace glob ("{tools,test}/**") is one item, as globRegExp reads one glob. A verbatim copy, pinned by gate.test.mjs.
+ */
+export function ownsItems(text) {
+  const s = String(text ?? ''), out = [];
+  let from = 0, open = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '{') open++;
+    else if (c === '}' && open) open--;
+    else if (c === ';' || (c === ',' && !open)) { out.push(s.slice(from, i).trim()); from = i + 1; open = 0; }
+  }
+  out.push(s.slice(from).trim());
+  return out;
+}
+
+/** The job file's owns line ("a, b", "see mission", "none", "not set") → { paths, mission, none, set }; cut by ownsItems. */
 export function readOwnsLine(text) {
   const t = String(text ?? '').trim();
   if (!t || /^not set$/i.test(t)) return { paths: [], mission: false, none: false, set: false };
   const out = { paths: [], mission: false, none: false, set: true };
-  for (const item of t.split(',').map((s) => s.trim().replace(/^\.\//, '')).filter(Boolean)) {
+  for (const item of ownsItems(t).map((s) => s.replace(/^\.\//, '')).filter(Boolean)) {
     if (/^see\s+(?:the\s+)?mission$/i.test(item)) out.mission = true;
     else if (/^none$/i.test(item)) out.none = true;
     else out.paths.push(item);
@@ -202,8 +228,13 @@ export function placePath(path, { root = '', cwd = '' } = {}) {
   return { inside: true, rel: p.segs.slice(base.segs.length).join('/'), windows };
 }
 
-/** inOwns, with Windows paths compared without case. */
-const owned = (rel, paths, windows) => (windows ? inOwns(rel.toLowerCase(), paths.map((x) => x.toLowerCase())) : inOwns(rel, paths));
+/**
+ * inOwns, with Windows paths compared without case, and never a path in .git (job bh6): an owns glob that matches .git
+ * (".gi?/**", "{.git,docs}/**", "**\/config", a folder holding a nested repo) gives no write there. inOwns stays the
+ * overseer's verbatim copy (the pins test in test/gate.test.mjs), so the deny sits here, where every owns check passes,
+ * as the overseer's sits in its scope check (oversee.mjs scopeResult, job bh9).
+ */
+const owned = (rel, paths, windows) => !inGitDir(rel) && (windows ? inOwns(rel.toLowerCase(), paths.map((x) => x.toLowerCase())) : inOwns(rel, paths));
 /** The path a file tool names. */
 const toolPath = (event) => event?.tool_input?.file_path ?? event?.tool_input?.notebook_path ?? event?.tool_input?.path ?? '';
 /** The project's root: the folder that holds .aisle-job, else the hook's cwd. */
